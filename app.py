@@ -119,11 +119,15 @@ def get_station_data():
 
 
 # ---------------- API CHO FILE HTML ----------------
-@app.route('/api/report', methods=['GET'])
-def api_report():
-    data, error = get_station_data()
-    if error:
-        return jsonify({"status": "error", "message": error}), 500
+@app.route('/')
+@app.route('/api/report')
+def report_api():
+    try:
+        # Gọi hàm lấy và phân loại dữ liệu trạm
+        data = get_station_data() 
+        return jsonify(data)
+    except Exception as e:
+        return jsonify({"status": "error", "message": str(e)}), 500
     return jsonify(data)
 
 
