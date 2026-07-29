@@ -1,101 +1,220 @@
-import datetime
+import os
+import re
+import asyncio
+from datetime import datetime
+from urllib.parse import urljoin
+from flask import Flask, jsonify
 import requests
 from bs4 import BeautifulSoup
 from telegram import Update
-from telegram.ext import ApplicationBuilder, CommandHandler, MessageHandler, filters, ContextTypes
+from telegram.ext import Application, CommandHandler, ContextTypes
 
-# --- THÔNG TIN CẤU HÌNH ---
-TELEGRAM_BOT_TOKEN = "8587075816:AAHlm9r7mwCjEQlgmx6KjoZ8AE7Vd844x6s"
-
-LOGIN_URL = "http://222.255.11.82/Login.aspx"  # URL trang đăng nhập thực tế
-DATA_URL = "http://222.255.11.82/Modules/MuaTudong/BaoCaoChiTietDuLieu.aspx"
+# ==================== CẤU HÌNH HỆ THỐNG ====================
+BASE_URL = "http://222.255.11.82"
+LOGIN_URL = f"{BASE_URL}/LoginNew.aspx"
+REPORT_URL = f"{BASE_URL}/Modules/Modules/MuaTudong/BaoCaoChiTietDuLieu.aspx"
 
 USERNAME = "admin"
 PASSWORD = "ttdl@2021"
 
+TELEGRAM_BOT_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN", "8587075816:AAHlm9r7mwCjEQlgmx6KjoZ8AE7Vd844x6s")
 
-def get_station_status():
-    """Hàm đăng nhập và lấy trạng thái các trạm từ hệ thống"""
+app = Flask(__name__)
+
+# ==================== HÀM CÀO DỮ LIỆU ASP.NET ====================
+def get_station_data():
     session = requests.Session()
     
-    # 1. Đăng nhập hệ thống (Lưu ý điều chỉnh payload theo form thực tế)
-    login_payload = {
-        'username': USERNAME,
-        'password': PASSWORD
-    }
+    # Giả lập trình duyệt chuẩn để vượt qua bộ lọc ASP.NET
+    session.headers.update({
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+        'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8',
+        'Accept-Language': 'vi-VN,vi;q=0.9,en-US;q=0.8,en;q=0.7',
+        'Connection': 'keep-alive',
+        'Upgrade-Insecure-Requests': '1'
+    })
+
+    active_list = []
+    lost_1h_3h = []
+    lost_over_3h = []
+
     try:
-        session.post(LOGIN_URL, data=login_payload, timeout=10)
-        
-        # 2. Truy cập trang báo cáo dữ liệu
-        response = session.get(DATA_URL, timeout=10)
-        if response.status_code != 200:
-            return "❌ Không thể truy cập dữ liệu hệ thống trạm."
-            
-        soup = BeautifulSoup(response.text, 'html.parser')
-        
-        # 3. Phân tích bảng dữ liệu (Giả định bảng có id="gridData" hoặc class tương ứng)
-        # Bổ sung logic trích xuất dữ liệu thực tế từ HTML tại đây
-        rows = soup.find_all('tr') 
-        
-        active_stations = []
-        off_1h_to_3h = []
-        off_over_3h = []
-        
-        now = datetime.datetime.now()
+        # BƯỚC 1: Lấy trang Login.aspx để nhận ASP.NET_SessionId cookie & ViewState
+        res_get = session.get(LOGIN_URL, timeout=15)
+        soup_login = BeautifulSoup(res_get.text, 'html.parser')
 
-        # Ví dụ mô phỏng duyệt qua danh sách trạm từ dữ liệu web
-        # Bạn thay thế đoạn mô phỏng này bằng dữ liệu bóc tách được từ `soup`
-        sample_stations = [
-            {"name": "Trạm Cẩm Thủy", "last_time": now - datetime.timedelta(minutes=20)},
-            {"name": "Trạm Thạch Thành", "last_time": now - datetime.timedelta(hours=1, minutes=45)},
-            {"name": "Trạm Tĩnh Gia", "last_time": now - datetime.timedelta(hours=4)},
-        ]
+        form = soup_login.find('form')
+        target_action = LOGIN_URL
+        if form and form.get('action'):
+            target_action = urljoin(LOGIN_URL, form.get('action'))
 
-        for st in sample_stations:
-            diff_hours = (now - st["last_time"]).total_seconds() / 3600
-            time_str = st["last_time"].strftime("%H:%M %d/%m")
-            
-            if diff_hours < 1:
-                active_stations.append(f"• {st['name']} ({time_str})")
-            elif 1 <= diff_hours <= 3:
-                off_1h_to_3h.append(f"• {st['name']} (Mất kết nối: {int(diff_hours)}h{(int(diff_hours*60)%60)}p)")
-            else:
-                off_over_3h.append(f"• {st['name']} (Mất kết nối > 3h)")
+        # Lấy toàn bộ thẻ hidden inputs (__VIEWSTATE, __EVENTVALIDATION,...)
+        payload = {}
+        inputs = form.find_all('input') if form else soup_login.find_all('input')
+        for inp in inputs:
+            name = inp.get('name')
+            if name:
+                payload[name] = inp.get('value', '')
 
-        # 4. Định dạng tin nhắn báo cáo
-        report = f"📊 **BÁO CÁO TRẠM MƯA TỰ ĐỘNG**\n"
-        report += f"🕒 *Thời gian xuất báo cáo:* {now.strftime('%H:%M:%S %d/%m/%Y')}\n\n"
-        
-        report += f"✅ **ĐANG HOẠT ĐỘNG ({len(active_stations)} trạm):**\n"
-        report += "\n".join(active_stations) if active_stations else "Không có"
-        report += "\n\n"
-        
-        report += f"⚠️ **MẤT TÍN HIỆU TỪ 1H ĐẾN 3H ({len(off_1h_to_3h)} trạm):**\n"
-        report += "\n".join(off_1h_to_3h) if off_1h_to_3h else "Không có"
-        report += "\n\n"
-        
-        report += f"🚫 **MẤT TÍN HIỆU TRÊN 3H ({len(off_over_3h)} trạm):**\n"
-        report += "\n".join(off_over_3h) if off_over_3h else "Không có"
+        # Gán chính xác thông tin đăng nhập từ HTML của bạn
+        payload['txtUserName'] = USERNAME
+        payload['txtPWD'] = PASSWORD
+        payload['btnSubmit'] = 'Đăng Nhập'
 
-        return report
+        # BƯỚC 2: Gửi POST Đăng nhập kèm Referer
+        session.headers.update({
+            'Referer': LOGIN_URL,
+            'Content-Type': 'application/x-www-form-urlencoded'
+        })
+        
+        res_post = session.post(target_action, data=payload, timeout=15, allow_redirects=True)
+
+        # BƯỚC 3: Truy cập trang Báo cáo chi tiết
+        res_report = session.get(REPORT_URL, timeout=15)
+        soup_report = BeautifulSoup(res_report.text, 'html.parser')
+
+        # Kiểm tra xem có bị đẩy ngược lại trang Login không
+        if "login" in res_report.url.lower() or soup_report.find('input', {'id': 'txtPWD'}):
+            return {
+                "status": "error",
+                "message": "Đăng nhập không thành công. Máy chủ từ chối tài khoản hoặc session bị hỏng.",
+                "current_url": res_report.url
+            }
+
+        # BƯỚC 4: Tìm bảng dữ liệu
+        tables = soup_report.find_all('table')
+        target_table = None
+
+        for t in tables:
+            rows = t.find_all('tr')
+            if len(rows) > 2:
+                target_table = t
+                break
+
+        if not target_table:
+            return {
+                "status": "error",
+                "message": "Đã đăng nhập thành công nhưng không tìm thấy bảng dữ liệu trạm.",
+                "page_title": soup_report.title.string if soup_report.title else "N/A"
+            }
+
+        rows = target_table.find_all('tr')
+        now = datetime.now()
+
+        # BƯỚC 5: Phân loại dữ liệu trạm
+        for row in rows[1:]:
+            cols = [td.get_text(strip=True) for td in row.find_all(['td', 'th'])]
+            if len(cols) < 2:
+                continue
+
+            station_name = cols[1] if len(cols) > 1 else cols[0]
+            last_time_str = cols[2] if len(cols) > 2 else cols[-1]
+
+            if any(k in station_name for k in ["Tên", "Trạm", "STT", "Tên trạm"]):
+                continue
+
+            try:
+                match = re.search(r'\d{1,2}/\d{1,2}/\d{4}\s+\d{1,2}:\d{2}(:\d{2})?', last_time_str)
+                if match:
+                    time_str = match.group(0)
+                    fmt = "%d/%m/%Y %H:%M:%S" if time_str.count(':') == 2 else "%d/%m/%Y %H:%M"
+                    last_time = datetime.strptime(time_str, fmt)
+                    
+                    diff_minutes = (now - last_time).total_seconds() / 60
+                    item = {"name": station_name, "last_time": time_str}
+
+                    if diff_minutes <= 60:
+                        active_list.append(item)
+                    elif 60 < diff_minutes <= 180:
+                        item["lost_minutes"] = int(diff_minutes)
+                        lost_1h_3h.append(item)
+                    else:
+                        item["lost_minutes"] = int(diff_minutes)
+                        lost_over_3h.append(item)
+                else:
+                    lost_over_3h.append({"name": station_name, "last_time": last_time_str or "Không xác định"})
+            except Exception:
+                lost_over_3h.append({"name": station_name, "last_time": last_time_str})
+
+        return {
+            "status": "success",
+            "updated_at": now.strftime("%H:%M:%S %d/%m/%Y"),
+            "summary": {
+                "active_count": len(active_list),
+                "lost_1h_3h_count": len(lost_1h_3h),
+                "lost_over_3h_count": len(lost_over_3h)
+            },
+            "active": active_list,
+            "lost_1h_3h": lost_1h_3h,
+            "lost_over_3h": lost_over_3h
+        }
 
     except Exception as e:
-        return f"⚠️ Có lỗi xảy ra khi kết nối máy chủ: {str(e)}"
+        return {"status": "error", "message": f"Lỗi kết nối máy chủ: {str(e)}"}
 
+# ==================== CẤU HÌNH FLASK API ====================
+@app.route('/')
+@app.route('/api/report')
+def report_api():
+    data = get_station_data()
+    return jsonify(data)
 
-async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Hàm xử lý phản hồi mỗi khi có tin nhắn gửi tới Bot"""
-    await update.message.reply_text("🔄 Đang lấy dữ liệu trạm từ hệ thống, vui lòng đợi giây lát...")
-    report_text = get_station_status()
-    await update.message.reply_text(report_text, parse_mode='Markdown')
+# ==================== CẤU HÌNH TELEGRAM BOT ====================
+def format_telegram_message(data):
+    if data.get("status") != "success":
+        return f"⚠️ **BÁO LỖI**: {data.get('message', 'Không thể lấy dữ liệu')}"
 
+    msg = f"📊 **BÁO CÁO TRẠM MƯA TỰ ĐỘNG**\n"
+    msg += f"🕒 *Cập nhật lúc:* {data['updated_at']}\n\n"
 
-if __name__ == '__main__':
-    app = ApplicationBuilder().token(TELEGRAM_BOT_TOKEN).build()
-    
-    # Nhận mọi tin nhắn văn bản gửi tới bot
-    app.add_handler(MessageHandler(filters.TEXT & (~filters.COMMAND), handle_message))
-    app.add_handler(CommandHandler("start", handle_message))
-    
-    print("Bot Telegram đang chạy...")
-    app.run_polling()
+    msg += f"✅ **ĐANG HOẠT ĐỘNG ({data['summary']['active_count']} trạm):**\n"
+    if data['active']:
+        for st in data['active'][:10]:
+            msg += f"• {st['name']} ({st['last_time']})\n"
+        if len(data['active']) > 10:
+            msg += f"• ... và {len(data['active']) - 10} trạm khác.\n"
+    else:
+        msg += "• Không có trạm nào.\n"
+
+    msg += f"\n⚠️ **MẤT KẾT NỐI TỪ 1H - 3H ({data['summary']['lost_1h_3h_count']} trạm):**\n"
+    if data['lost_1h_3h']:
+        for st in data['lost_1h_3h']:
+            msg += f"• {st['name']} (Mất: {st.get('lost_minutes', '?')} phút)\n"
+    else:
+        msg += "• Không có trạm nào.\n"
+
+    msg += f"\n🚫 **MẤT KẾT NỐI TRÊN 3H ({data['summary']['lost_over_3h_count']} trạm):**\n"
+    if data['lost_over_3h']:
+        for st in data['lost_over_3h']:
+            msg += f"• {st['name']} (Lần cuối: {st['last_time']})\n"
+    else:
+        msg += "• Không có trạm nào.\n"
+
+    return msg
+
+async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await update.message.reply_text("⏳ Đang cào dữ liệu trạm mưa, vui lòng đợi trong giây lát...")
+    data = get_station_data()
+    message_text = format_telegram_message(data)
+    await update.message.reply_text(message_text, parse_mode='Markdown')
+
+def setup_telegram_bot():
+    if TELEGRAM_BOT_TOKEN:
+        try:
+            tg_app = Application.builder().token(TELEGRAM_BOT_TOKEN).build()
+            tg_app.add_handler(CommandHandler("start", start_command))
+            tg_app.add_handler(CommandHandler("baocao", start_command))
+            
+            loop = asyncio.get_event_loop()
+            loop.create_task(tg_app.initialize())
+            loop.create_task(tg_app.start())
+            loop.create_task(tg_app.updater.start_polling())
+            print("🤖 Telegram Bot đã khởi chạy thành công!")
+        except Exception as e:
+            print(f"❌ Lỗi Bot: {e}")
+
+setup_telegram_bot()
+
+if __name__ == "__main__":
+    port = int(os.environ.get("PORT", 5000))
+    app.run(host="0.0.0.0", port=port)
