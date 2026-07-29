@@ -3,7 +3,7 @@ import re
 import asyncio
 from datetime import datetime
 from urllib.parse import urljoin
-from flask import Flask, jsonify
+from flask import Flask, jsonify, request
 import requests
 from bs4 import BeautifulSoup
 from telegram import Update
@@ -22,7 +22,7 @@ TELEGRAM_BOT_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN", "8587075816:AAHlm9r7mw
 app = Flask(__name__)
 
 def fetch_and_login():
-    """Hàm thực hiện luồng đăng nhập và trả về kết quả thô để chẩn đoán"""
+    """Xử lý khởi tạo phiên, bóc tách ViewState và đăng nhập ASP.NET"""
     session = requests.Session()
     session.headers.update({
         'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
@@ -30,7 +30,7 @@ def fetch_and_login():
         'Accept-Language': 'vi-VN,vi;q=0.9,en-US;q=0.8,en;q=0.7',
     })
 
-    # 1. Truy cập trang Login
+    # 1. Tải trang Đăng nhập
     res_get = session.get(LOGIN_URL, timeout=15)
     soup_login = BeautifulSoup(res_get.text, 'html.parser')
 
@@ -52,7 +52,7 @@ def fetch_and_login():
         inputs_found.append({"name": name, "type": inp_type, "value": val[:30]})
         payload[name] = val
 
-    # Tìm chính xác name của Tên đăng nhập, Mật khẩu và Nút Đăng nhập
+    # 2. Xác định tên các ô dữ liệu
     user_key = None
     pass_key = None
     btn_key = None
@@ -66,19 +66,17 @@ def fetch_and_login():
         elif 'btn' in k_lower or 'login' in k_lower or 'dangnhap' in k_lower or 'submit' in k_lower:
             btn_key = k
 
-    # Gán tài khoản & mật khẩu
     payload[user_key or 'txtUsername'] = USERNAME
     payload[pass_key or 'txtPassword'] = PASSWORD
-    
-    # Nếu có nút submit thì kích hoạt nút đó
+
     if btn_key and btn_key not in payload:
         payload[btn_key] = 'Đăng nhập'
 
-    # 2. Gửi POST Đăng nhập
+    # 3. Gửi POST xác thực
     session.headers.update({'Referer': LOGIN_URL})
     res_post = session.post(target_action, data=payload, timeout=15, allow_redirects=True)
 
-    # 3. Lấy trang Báo cáo
+    # 4. Tải trang Báo cáo
     res_report = session.get(REPORT_URL, timeout=15)
     soup_report = BeautifulSoup(res_report.text, 'html.parser')
 
@@ -105,7 +103,11 @@ def get_station_data():
             return {
                 "status": "error",
                 "message": "Không tìm thấy bảng dữ liệu trạm trên trang web.",
-                "final_url": res_report.url
+                "debug_info": {
+                    "report_url": res_report.url,
+                    "inputs_detected": inputs_found,
+                    "page_title": soup_report.title.string if soup_report.title else None
+                }
             }
 
         rows = target_table.find_all('tr')
@@ -167,25 +169,6 @@ def get_station_data():
 def report_api():
     data = get_station_data()
     return jsonify(data)
-
-@app.route('/debug')
-def debug_api():
-    """Endpoint riêng phục vụ kiểm tra thông số máy chủ"""
-    try:
-        session, res_post, res_report, soup_report, inputs_found, payload = fetch_and_login()
-        tables = soup_report.find_all('table')
-        return jsonify({
-            "post_status_code": res_post.status_code,
-            "post_url": res_post.url,
-            "report_status_code": res_report.status_code,
-            "report_url": res_report.url,
-            "tables_found_count": len(tables),
-            "inputs_detected": inputs_found,
-            "page_title": soup_report.title.string if soup_report.title else "No Title",
-            "html_snippet": soup_report.text[:500]
-        })
-    except Exception as e:
-        return jsonify({"error": str(e)})
 
 # ==================== CẤU HÌNH TELEGRAM BOT ====================
 def format_telegram_message(data):
