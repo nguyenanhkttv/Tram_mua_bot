@@ -1,0 +1,6 @@
+Flask
+flask-cors
+requests
+beautifulsoup4
+python-telegram-bot>=20.0
+gunicorn
