@@ -21,8 +21,8 @@ TELEGRAM_BOT_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN", "8587075816:AAHlm9r7mw
 
 app = Flask(__name__)
 
-# ==================== HÀM CÀO DỮ LIỆU ASP.NET ====================
-def get_station_data():
+def fetch_and_login():
+    """Hàm thực hiện luồng đăng nhập và trả về kết quả thô để chẩn đoán"""
     session = requests.Session()
     session.headers.update({
         'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
@@ -30,61 +30,68 @@ def get_station_data():
         'Accept-Language': 'vi-VN,vi;q=0.9,en-US;q=0.8,en;q=0.7',
     })
 
+    # 1. Truy cập trang Login
+    res_get = session.get(LOGIN_URL, timeout=15)
+    soup_login = BeautifulSoup(res_get.text, 'html.parser')
+
+    form = soup_login.find('form')
+    target_action = LOGIN_URL
+    if form and form.get('action'):
+        target_action = urljoin(LOGIN_URL, form.get('action'))
+
+    payload = {}
+    inputs_found = []
+    inputs = form.find_all('input') if form else soup_login.find_all('input')
+
+    for inp in inputs:
+        name = inp.get('name')
+        if not name:
+            continue
+        val = inp.get('value', '')
+        inp_type = inp.get('type', '').lower()
+        inputs_found.append({"name": name, "type": inp_type, "value": val[:30]})
+        payload[name] = val
+
+    # Tìm chính xác name của Tên đăng nhập, Mật khẩu và Nút Đăng nhập
+    user_key = None
+    pass_key = None
+    btn_key = None
+
+    for k in payload.keys():
+        k_lower = k.lower()
+        if 'user' in k_lower or 'acc' in k_lower or 'taikhoan' in k_lower or 'txtuser' in k_lower:
+            user_key = k
+        elif 'pass' in k_lower or 'matkhau' in k_lower or 'txtpass' in k_lower:
+            pass_key = k
+        elif 'btn' in k_lower or 'login' in k_lower or 'dangnhap' in k_lower or 'submit' in k_lower:
+            btn_key = k
+
+    # Gán tài khoản & mật khẩu
+    payload[user_key or 'txtUsername'] = USERNAME
+    payload[pass_key or 'txtPassword'] = PASSWORD
+    
+    # Nếu có nút submit thì kích hoạt nút đó
+    if btn_key and btn_key not in payload:
+        payload[btn_key] = 'Đăng nhập'
+
+    # 2. Gửi POST Đăng nhập
+    session.headers.update({'Referer': LOGIN_URL})
+    res_post = session.post(target_action, data=payload, timeout=15, allow_redirects=True)
+
+    # 3. Lấy trang Báo cáo
+    res_report = session.get(REPORT_URL, timeout=15)
+    soup_report = BeautifulSoup(res_report.text, 'html.parser')
+
+    return session, res_post, res_report, soup_report, inputs_found, payload
+
+def get_station_data():
     active_list = []
     lost_1h_3h = []
     lost_over_3h = []
 
     try:
-        # 1. Khởi tạo session từ trang gốc
-        session.get(BASE_URL, timeout=15)
+        session, res_post, res_report, soup_report, inputs_found, payload = fetch_and_login()
 
-        # 2. GET trang Login
-        res_get = session.get(LOGIN_URL, timeout=15)
-        soup_login = BeautifulSoup(res_get.text, 'html.parser')
-
-        # Tìm Form chứa thông tin login
-        form = soup_login.find('form')
-        target_action = LOGIN_URL
-        if form and form.get('action'):
-            target_action = urljoin(LOGIN_URL, form.get('action'))
-
-        # Lấy toàn bộ input sẵn có (ViewState, EventValidation...)
-        payload = {}
-        if form:
-            inputs = form.find_all('input')
-        else:
-            inputs = soup_login.find_all('input')
-
-        for inp in inputs:
-            name = inp.get('name')
-            if not name:
-                continue
-            val = inp.get('value', '')
-            payload[name] = val
-
-        # Tìm chính xác name của Tên đăng nhập và Mật khẩu
-        user_key = None
-        pass_key = None
-        for k in payload.keys():
-            k_lower = k.lower()
-            if 'username' in k_lower or 'taikhoan' in k_lower or 'user' in k_lower or 'txtuser' in k_lower:
-                user_key = k
-            elif 'password' in k_lower or 'matkhau' in k_lower or 'pass' in k_lower or 'txtpass' in k_lower:
-                pass_key = k
-
-        # Trường hợp không nhận diện tự động được thì gán trường mặc định ASP.NET
-        payload[user_key or 'txtUsername'] = USERNAME
-        payload[pass_key or 'txtPassword'] = PASSWORD
-
-        # 3. Gửi request POST Đăng nhập
-        session.headers.update({'Referer': LOGIN_URL})
-        res_post = session.post(target_action, data=payload, timeout=15, allow_redirects=True)
-
-        # 4. Tải trang Báo cáo dữ liệu
-        res_report = session.get(REPORT_URL, timeout=15)
-        soup_report = BeautifulSoup(res_report.text, 'html.parser')
-
-        # Tìm bảng chứa danh sách trạm
         tables = soup_report.find_all('table')
         target_table = None
 
@@ -95,21 +102,15 @@ def get_station_data():
                 break
 
         if not target_table:
-            # Nếu không tìm thấy bảng, kiểm tra xem có đang bị quay lại trang Login không
-            if "login.aspx" in res_report.url.lower() or soup_report.find('input', {'type': 'password'}):
-                return {
-                    "status": "error",
-                    "message": "Đăng nhập thất bại. Máy chủ ASP.NET từ chối thông tin xác thực."
-                }
             return {
                 "status": "error",
-                "message": "Không tìm thấy bảng dữ liệu trạm mưa trên trang web."
+                "message": "Không tìm thấy bảng dữ liệu trạm trên trang web.",
+                "final_url": res_report.url
             }
 
         rows = target_table.find_all('tr')
         now = datetime.now()
 
-        # 5. Đọc và phân loại trạm
         for row in rows[1:]:
             cols = [td.get_text(strip=True) for td in row.find_all(['td', 'th'])]
             if len(cols) < 2:
@@ -166,6 +167,25 @@ def get_station_data():
 def report_api():
     data = get_station_data()
     return jsonify(data)
+
+@app.route('/debug')
+def debug_api():
+    """Endpoint riêng phục vụ kiểm tra thông số máy chủ"""
+    try:
+        session, res_post, res_report, soup_report, inputs_found, payload = fetch_and_login()
+        tables = soup_report.find_all('table')
+        return jsonify({
+            "post_status_code": res_post.status_code,
+            "post_url": res_post.url,
+            "report_status_code": res_report.status_code,
+            "report_url": res_report.url,
+            "tables_found_count": len(tables),
+            "inputs_detected": inputs_found,
+            "page_title": soup_report.title.string if soup_report.title else "No Title",
+            "html_snippet": soup_report.text[:500]
+        })
+    except Exception as e:
+        return jsonify({"error": str(e)})
 
 # ==================== CẤU HÌNH TELEGRAM BOT ====================
 def format_telegram_message(data):
