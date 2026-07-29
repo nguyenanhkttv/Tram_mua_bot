@@ -17,7 +17,7 @@ USERNAME = "admin"
 PASSWORD = "ttdl@2021"  # Thay bằng mật khẩu đúng của bạn
 
 # Lấy Token từ biến môi trường Render (ưu tiên) hoặc điền trực tiếp
-TELEGRAM_BOT_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN", "DÁN_TOKEN_BOT_CỦA_BẠN_VÀO_ĐÂY")
+TELEGRAM_BOT_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN", "8587075816:AAHlm9r7mwCjEQlgmx6KjoZ8AE7Vd844x6s")
 
 app = Flask(__name__)
 
