@@ -1,5 +1,6 @@
 import os
 import re
+import traceback
 import asyncio
 from datetime import datetime
 from urllib.parse import urljoin
@@ -11,8 +12,8 @@ from telegram.ext import Application, CommandHandler, ContextTypes
 
 # ==================== CẤU HÌNH HỆ THỐNG ====================
 BASE_URL = "http://222.255.11.82"
-LOGIN_URL = f"{BASE_URL}/LoginNew.aspx"
-REPORT_URL = f"{BASE_URL}/Modules/Modules/MuaTudong/BaoCaoChiTietDuLieu.aspx"
+LOGIN_URL = f"{BASE_URL}/Login.aspx"
+REPORT_URL = f"{BASE_URL}/Modules/MuaTudong/BaoCaoChiTietDuLieu.aspx"
 
 USERNAME = "admin"
 PASSWORD = "ttdl@2021"
@@ -24,14 +25,11 @@ app = Flask(__name__)
 # ==================== HÀM CÀO DỮ LIỆU ASP.NET ====================
 def get_station_data():
     session = requests.Session()
-    
-    # Giả lập trình duyệt chuẩn để vượt qua bộ lọc ASP.NET
     session.headers.update({
         'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-        'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8',
+        'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
         'Accept-Language': 'vi-VN,vi;q=0.9,en-US;q=0.8,en;q=0.7',
-        'Connection': 'keep-alive',
-        'Upgrade-Insecure-Requests': '1'
+        'Connection': 'keep-alive'
     })
 
     active_list = []
@@ -39,7 +37,7 @@ def get_station_data():
     lost_over_3h = []
 
     try:
-        # BƯỚC 1: Lấy trang Login.aspx để nhận ASP.NET_SessionId cookie & ViewState
+        # BƯỚC 1: Lấy trang Login.aspx để nhận Cookie và Hidden Inputs
         res_get = session.get(LOGIN_URL, timeout=15)
         soup_login = BeautifulSoup(res_get.text, 'html.parser')
 
@@ -48,7 +46,6 @@ def get_station_data():
         if form and form.get('action'):
             target_action = urljoin(LOGIN_URL, form.get('action'))
 
-        # Lấy toàn bộ thẻ hidden inputs (__VIEWSTATE, __EVENTVALIDATION,...)
         payload = {}
         inputs = form.find_all('input') if form else soup_login.find_all('input')
         for inp in inputs:
@@ -56,30 +53,18 @@ def get_station_data():
             if name:
                 payload[name] = inp.get('value', '')
 
-        # Gán chính xác thông tin đăng nhập từ HTML của bạn
+        # Gán chính xác thông tin đăng nhập từ HTML
         payload['txtUserName'] = USERNAME
         payload['txtPWD'] = PASSWORD
         payload['btnSubmit'] = 'Đăng Nhập'
 
-        # BƯỚC 2: Gửi POST Đăng nhập kèm Referer
-        session.headers.update({
-            'Referer': LOGIN_URL,
-            'Content-Type': 'application/x-www-form-urlencoded'
-        })
-        
+        # BƯỚC 2: Gửi POST Đăng nhập
+        session.headers.update({'Referer': LOGIN_URL})
         res_post = session.post(target_action, data=payload, timeout=15, allow_redirects=True)
 
-        # BƯỚC 3: Truy cập trang Báo cáo chi tiết
+        # BƯỚC 3: Truy cập trang Báo cáo
         res_report = session.get(REPORT_URL, timeout=15)
         soup_report = BeautifulSoup(res_report.text, 'html.parser')
-
-        # Kiểm tra xem có bị đẩy ngược lại trang Login không
-        if "login" in res_report.url.lower() or soup_report.find('input', {'id': 'txtPWD'}):
-            return {
-                "status": "error",
-                "message": "Đăng nhập không thành công. Máy chủ từ chối tài khoản hoặc session bị hỏng.",
-                "current_url": res_report.url
-            }
 
         # BƯỚC 4: Tìm bảng dữ liệu
         tables = soup_report.find_all('table')
@@ -94,14 +79,14 @@ def get_station_data():
         if not target_table:
             return {
                 "status": "error",
-                "message": "Đã đăng nhập thành công nhưng không tìm thấy bảng dữ liệu trạm.",
-                "page_title": soup_report.title.string if soup_report.title else "N/A"
+                "message": "Không tìm thấy bảng dữ liệu trạm trên trang web sau khi đăng nhập.",
+                "url_hien_tai": res_report.url
             }
 
         rows = target_table.find_all('tr')
         now = datetime.now()
 
-        # BƯỚC 5: Phân loại dữ liệu trạm
+        # BƯỚC 5: Duyệt và phân loại trạng thái các trạm (Bọc an toàn)
         for row in rows[1:]:
             cols = [td.get_text(strip=True) for td in row.find_all(['td', 'th'])]
             if len(cols) < 2:
@@ -110,7 +95,8 @@ def get_station_data():
             station_name = cols[1] if len(cols) > 1 else cols[0]
             last_time_str = cols[2] if len(cols) > 2 else cols[-1]
 
-            if any(k in station_name for k in ["Tên", "Trạm", "STT", "Tên trạm"]):
+            # Bỏ qua các tiêu đề cột
+            if any(k in station_name.lower() for k in ["tên", "trạm", "stt", "tên trạm"]):
                 continue
 
             try:
@@ -132,9 +118,9 @@ def get_station_data():
                         item["lost_minutes"] = int(diff_minutes)
                         lost_over_3h.append(item)
                 else:
-                    lost_over_3h.append({"name": station_name, "last_time": last_time_str or "Không xác định"})
+                    lost_over_3h.append({"name": station_name, "last_time": last_time_str if last_time_str else "Mất kết nối"})
             except Exception:
-                lost_over_3h.append({"name": station_name, "last_time": last_time_str})
+                lost_over_3h.append({"name": station_name, "last_time": str(last_time_str)})
 
         return {
             "status": "success",
@@ -150,7 +136,12 @@ def get_station_data():
         }
 
     except Exception as e:
-        return {"status": "error", "message": f"Lỗi kết nối máy chủ: {str(e)}"}
+        # Bắt toàn bộ lỗi để tránh bị sập HTTP 500
+        return {
+            "status": "error",
+            "message": f"Ngoại lệ xử lý: {str(e)}",
+            "traceback": traceback.format_exc()
+        }
 
 # ==================== CẤU HÌNH FLASK API ====================
 @app.route('/')
