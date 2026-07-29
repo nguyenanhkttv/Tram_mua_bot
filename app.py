@@ -23,7 +23,7 @@ LOGIN_URL = f"{BASE_URL}/Login.aspx"
 REPORT_URL = f"{BASE_URL}/Modules/MuaTudong/BaoCaoChiTietDuLieu.aspx"
 
 USERNAME = "admin"
-PASSWORD = "tttl@2021"
+PASSWORD = "ttdl@2021"
 
 
 def get_station_data():
