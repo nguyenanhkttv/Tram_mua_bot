@@ -2,7 +2,8 @@ import os
 import re
 import asyncio
 from datetime import datetime
-from flask import Flask, jsonify, request
+from urllib.parse import urljoin
+from flask import Flask, jsonify
 import requests
 from bs4 import BeautifulSoup
 from telegram import Update
@@ -22,13 +23,11 @@ app = Flask(__name__)
 
 # ==================== HÀM CÀO DỮ LIỆU ASP.NET ====================
 def get_station_data():
-    """Hàm xử lý đăng nhập ASP.NET và lấy danh sách trạm mưa"""
     session = requests.Session()
     session.headers.update({
         'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-        'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8',
+        'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
         'Accept-Language': 'vi-VN,vi;q=0.9,en-US;q=0.8,en;q=0.7',
-        'Referer': LOGIN_URL
     })
 
     active_list = []
@@ -36,71 +35,81 @@ def get_station_data():
     lost_over_3h = []
 
     try:
-        # Bước 1: GET trang Login lấy các thuộc tính ViewState ban đầu
+        # 1. Khởi tạo session từ trang gốc
+        session.get(BASE_URL, timeout=15)
+
+        # 2. GET trang Login
         res_get = session.get(LOGIN_URL, timeout=15)
         soup_login = BeautifulSoup(res_get.text, 'html.parser')
 
-        # Tự động trích xuất mọi thẻ input (đặc biệt là ViewState & EventValidation)
+        # Tìm Form chứa thông tin login
+        form = soup_login.find('form')
+        target_action = LOGIN_URL
+        if form and form.get('action'):
+            target_action = urljoin(LOGIN_URL, form.get('action'))
+
+        # Lấy toàn bộ input sẵn có (ViewState, EventValidation...)
         payload = {}
-        for inp in soup_login.find_all('input'):
+        if form:
+            inputs = form.find_all('input')
+        else:
+            inputs = soup_login.find_all('input')
+
+        for inp in inputs:
             name = inp.get('name')
             if not name:
                 continue
             val = inp.get('value', '')
-            inp_type = inp.get('type', '').lower()
+            payload[name] = val
 
-            if inp_type in ['hidden', 'submit', 'button']:
-                payload[name] = val
+        # Tìm chính xác name của Tên đăng nhập và Mật khẩu
+        user_key = None
+        pass_key = None
+        for k in payload.keys():
+            k_lower = k.lower()
+            if 'username' in k_lower or 'taikhoan' in k_lower or 'user' in k_lower or 'txtuser' in k_lower:
+                user_key = k
+            elif 'password' in k_lower or 'matkhau' in k_lower or 'pass' in k_lower or 'txtpass' in k_lower:
+                pass_key = k
 
-        # Gán chính xác tài khoản và mật khẩu
-        # Hỗ trợ cả tên trường mặc định lẫn trường động của ASP.NET
-        user_field = None
-        pass_field = None
-        for inp in soup_login.find_all('input'):
-            name = inp.get('name', '')
-            if 'user' in name.lower() or 'acc' in name.lower() or 'taikhoan' in name.lower():
-                user_field = name
-            elif 'pass' in name.lower() or 'matkhau' in name.lower():
-                pass_field = name
+        # Trường hợp không nhận diện tự động được thì gán trường mặc định ASP.NET
+        payload[user_key or 'txtUsername'] = USERNAME
+        payload[pass_key or 'txtPassword'] = PASSWORD
 
-        payload[user_field or 'txtUsername'] = USERNAME
-        payload[pass_field or 'txtPassword'] = PASSWORD
-        if 'btnLogin' not in payload:
-            payload['btnLogin'] = 'Đăng nhập'
+        # 3. Gửi request POST Đăng nhập
+        session.headers.update({'Referer': LOGIN_URL})
+        res_post = session.post(target_action, data=payload, timeout=15, allow_redirects=True)
 
-        # Bước 2: Gửi POST Đăng nhập (Cho phép Redirect)
-        res_post = session.post(LOGIN_URL, data=payload, timeout=15, allow_redirects=True)
-
-        # Bước 3: Truy cập trang Báo cáo chi tiết dữ liệu
+        # 4. Tải trang Báo cáo dữ liệu
         res_report = session.get(REPORT_URL, timeout=15)
         soup_report = BeautifulSoup(res_report.text, 'html.parser')
 
-        # Lấy tất cả các bảng tìm thấy trên trang báo cáo
+        # Tìm bảng chứa danh sách trạm
         tables = soup_report.find_all('table')
         target_table = None
 
         for t in tables:
             rows = t.find_all('tr')
-            if len(rows) > 2:  # Bảng dữ liệu thực sự sẽ có trên 2 hàng
+            if len(rows) > 2:
                 target_table = t
                 break
 
         if not target_table:
-            # Nếu bị chuyển hướng về lại trang Login -> Sai tài khoản/mật khẩu hoặc lỗi Session
-            if "Login.aspx" in res_report.url or soup_report.find('input', {'type': 'password'}):
+            # Nếu không tìm thấy bảng, kiểm tra xem có đang bị quay lại trang Login không
+            if "login.aspx" in res_report.url.lower() or soup_report.find('input', {'type': 'password'}):
                 return {
                     "status": "error",
-                    "message": "Đăng nhập không thành công. Hãy kiểm tra lại tài khoản hoặc kết nối máy chủ."
+                    "message": "Đăng nhập thất bại. Máy chủ ASP.NET từ chối thông tin xác thực."
                 }
             return {
                 "status": "error",
-                "message": "Không tìm thấy bảng dữ liệu trạm trên trang web."
+                "message": "Không tìm thấy bảng dữ liệu trạm mưa trên trang web."
             }
 
         rows = target_table.find_all('tr')
         now = datetime.now()
 
-        # Bước 4: Duyệt và phân loại trạng thái trạm
+        # 5. Đọc và phân loại trạm
         for row in rows[1:]:
             cols = [td.get_text(strip=True) for td in row.find_all(['td', 'th'])]
             if len(cols) < 2:
@@ -109,12 +118,10 @@ def get_station_data():
             station_name = cols[1] if len(cols) > 1 else cols[0]
             last_time_str = cols[2] if len(cols) > 2 else cols[-1]
 
-            # Bỏ qua các dòng tiêu đề trùng lặp trong bảng
-            if any(k in station_name for k in ["Tên", "Trạm", "STT"]):
+            if any(k in station_name for k in ["Tên", "Trạm", "STT", "Tên trạm"]):
                 continue
 
             try:
-                # Tìm định dạng ngày giờ DD/MM/YYYY HH:MM(:SS)
                 match = re.search(r'\d{1,2}/\d{1,2}/\d{4}\s+\d{1,2}:\d{2}(:\d{2})?', last_time_str)
                 if match:
                     time_str = match.group(0)
@@ -162,7 +169,6 @@ def report_api():
 
 # ==================== CẤU HÌNH TELEGRAM BOT ====================
 def format_telegram_message(data):
-    """Định dạng văn bản hiển thị đẹp trên Telegram"""
     if data.get("status") != "success":
         return f"⚠️ **BÁO LỖI**: {data.get('message', 'Không thể lấy dữ liệu')}"
 
@@ -211,9 +217,9 @@ def setup_telegram_bot():
             loop.create_task(tg_app.initialize())
             loop.create_task(tg_app.start())
             loop.create_task(tg_app.updater.start_polling())
-            print("🤖 Telegram Bot đã khởi chạy thành công!")
+            print("🤖 Telegram Bot đã khởi chạy!")
         except Exception as e:
-            print(f"❌ Không thể khởi chạy Telegram Bot: {e}")
+            print(f"❌ Lỗi Bot: {e}")
 
 setup_telegram_bot()
 
