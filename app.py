@@ -192,7 +192,7 @@ async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(message_text, parse_mode='Markdown')
 
 def setup_telegram_bot():
-    if TELEGRAM_BOT_TOKEN and TELEGRAM_BOT_TOKEN != "DÁN_TOKEN_BOT_CỦA_BẠN_VÀO_ĐÂY":
+    if TELEGRAM_BOT_TOKEN and TELEGRAM_BOT_TOKEN != "8587075816:AAHlm9r7mwCjEQlgmx6KjoZ8AE7Vd844x6s":
         try:
             tg_app = Application.builder().token(TELEGRAM_BOT_TOKEN).build()
             tg_app.add_handler(CommandHandler("start", start_command))
