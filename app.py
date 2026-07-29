@@ -2,7 +2,7 @@ import os
 import re
 import asyncio
 from datetime import datetime
-from flask import Flask, jsonify
+from flask import Flask, jsonify, request
 import requests
 from bs4 import BeautifulSoup
 from telegram import Update
@@ -14,91 +14,97 @@ LOGIN_URL = f"{BASE_URL}/Login.aspx"
 REPORT_URL = f"{BASE_URL}/Modules/MuaTudong/BaoCaoChiTietDuLieu.aspx"
 
 USERNAME = "admin"
-PASSWORD = "ttdl@2021"  # Thay bằng mật khẩu đúng của bạn
+PASSWORD = "ttdl@2021"
 
-# Lấy Token từ biến môi trường Render (ưu tiên) hoặc điền trực tiếp
 TELEGRAM_BOT_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN", "8587075816:AAHlm9r7mwCjEQlgmx6KjoZ8AE7Vd844x6s")
 
 app = Flask(__name__)
 
 # ==================== HÀM CÀO DỮ LIỆU ASP.NET ====================
-def get_station_data():
-    """Hàm trung gian: Đăng nhập ASP.NET và bóc tách dữ liệu trạm mưa"""
+def get_station_data(debug=False):
     session = requests.Session()
     session.headers.update({
-        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-        'Accept-Language': 'vi-VN,vi;q=0.9,en-US;q=0.8,en;q=0.7'
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
     })
 
-    active_list = []
-    lost_1h_3h = []
-    lost_over_3h = []
-
     try:
-        # Bước 1: GET trang Login để lấy các thuộc tính ẩn
+        # 1. GET lấy các biến ẩn từ trang Login
         res_get = session.get(LOGIN_URL, timeout=15)
         soup_login = BeautifulSoup(res_get.text, 'html.parser')
 
-        # Bóc tách các trường ASP.NET ViewState
-        viewstate = soup_login.find('input', {'name': '__VIEWSTATE'})
-        eventval = soup_login.find('input', {'name': '__EVENTVALIDATION'})
-        generator = soup_login.find('input', {'name': '__VIEWSTATEGENERATOR'})
+        # Gom tất cả các input
+        login_inputs = {inp.get('name'): inp.get('value', '') for inp in soup_login.find_all('input') if inp.get('name')}
 
-        # Tìm chính xác tên của ô username và password trong form
-        user_field = 'txtUsername'
-        pass_field = 'txtPassword'
-        btn_field = 'btnLogin'
+        # Điền thông tin đăng nhập vào các tên trường phổ biến của ASP.NET
+        payload = login_inputs.copy()
+        
+        # Gán tài khoản & mật khẩu vào các tên trường tiềm năng
+        for k in list(payload.keys()):
+            k_lower = k.lower()
+            if 'user' in k_lower or 'acc' in k_lower or 'taikhoan' in k_lower:
+                payload[k] = USERNAME
+            elif 'pass' in k_lower or 'matkhau' in k_lower:
+                payload[k] = PASSWORD
 
-        # Đội tìm kiểm tra thuộc tính name thực tế nếu form dùng ID phức tạp
-        for inp in soup_login.find_all('input'):
-            name = inp.get('name', '')
-            if 'Username' in name or 'TaiKhoan' in name:
-                user_field = name
-            elif 'Password' in name or 'MatKhau' in name:
-                pass_field = name
-            elif 'Login' in name or 'DangNhap' in name:
-                btn_field = name
+        # Điền fallback nếu không tự nhận diện
+        if 'txtUsername' not in payload: payload['txtUsername'] = USERNAME
+        if 'txtPassword' not in payload: payload['txtPassword'] = PASSWORD
+        if 'btnLogin' not in payload: payload['btnLogin'] = 'Đăng nhập'
 
-        payload = {
-            '__VIEWSTATE': viewstate['value'] if viewstate else '',
-            '__EVENTVALIDATION': eventval['value'] if eventval else '',
-            '__VIEWSTATEGENERATOR': generator['value'] if generator else '',
-            user_field: USERNAME,
-            pass_field: PASSWORD,
-            btn_field: 'Đăng nhập'
-        }
+        # 2. Gửi request POST Đăng nhập
+        res_post = session.post(LOGIN_URL, data=payload, timeout=15, allow_redirects=True)
 
-        # Bước 2: Send POST Request để thực hiện Log in
-        res_post = session.post(LOGIN_URL, data=payload, timeout=15)
-
-        # Bước 3: Truy cập trang báo cáo dữ liệu
+        # 3. Lấy trang Báo cáo chi tiết
         res_report = session.get(REPORT_URL, timeout=15)
         soup_report = BeautifulSoup(res_report.text, 'html.parser')
 
-        # Tìm bảng chứa dữ liệu trạm
-        table = soup_report.find('table')
-        if not table:
+        # Danh sách tất cả các table tìm thấy
+        tables = soup_report.find_all('table')
+
+        # NẾU BẬT MODE DEBUG HOẶC KHÔNG TÌM THẤY BẢNG -> TRẢ VỀ DỮ LIỆU ĐỂ KIỂM TRA
+        if debug or not tables:
             return {
-                "status": "error",
-                "message": "Không tìm thấy bảng dữ liệu trạm trên trang web. Vui lòng kiểm tra lại tài khoản/mật khẩu."
+                "status": "debug",
+                "login_form_inputs": list(login_inputs.keys()),
+                "post_response_url": res_post.url,
+                "report_response_url": res_report.url,
+                "tables_count": len(tables),
+                "is_redirected_to_login": "login" in res_report.url.lower(),
+                "page_title": soup_report.title.string if soup_report.title else "No Title",
+                "html_snippet": res_report.text[:1000]  # 1000 ký tự đầu tiên của HTML trả về
             }
 
-        rows = table.find_all('tr')
+        # 4. Tìm bảng chứa dữ liệu (Bảng có nhiều hơn 1 dòng)
+        target_table = None
+        for t in tables:
+            if len(t.find_all('tr')) > 1:
+                target_table = t
+                break
+
+        if not target_table:
+            return {
+                "status": "error",
+                "message": f"Không tìm thấy bảng dữ liệu trạm. Tìm thấy {len(tables)} bảng nhưng đều rỗng.",
+                "report_url": res_report.url
+            }
+
+        # 5. Phân tích dữ liệu từ các hàng tr
+        active_list, lost_1h_3h, lost_over_3h = [], [], []
+        rows = target_table.find_all('tr')
         now = datetime.now()
 
-        # Bước 4: Duyệt qua từng dòng dữ liệu (bỏ qua dòng tiêu đề header)
         for row in rows[1:]:
             cols = [td.get_text(strip=True) for td in row.find_all(['td', 'th'])]
-            if len(cols) < 3:
+            if len(cols) < 2:
                 continue
 
-            # Thông thường: Cột 1 là Tên trạm, Cột 2/3 là Thời gian cập nhật gần nhất
             station_name = cols[1] if len(cols) > 1 else cols[0]
-            last_time_str = cols[2] if len(cols) > 2 else ""
+            last_time_str = cols[2] if len(cols) > 2 else cols[-1]
 
-            # Thử parse thời gian từ chuỗi (định dạng DD/MM/YYYY HH:MM:SS)
+            if any(k in station_name for k in ["Tên", "Trạm", "STT"]):
+                continue
+
             try:
-                # Tìm chuỗi thời gian trong ô bằng regex
                 match = re.search(r'\d{1,2}/\d{1,2}/\d{4}\s+\d{1,2}:\d{2}(:\d{2})?', last_time_str)
                 if match:
                     time_str = match.group(0)
@@ -106,7 +112,6 @@ def get_station_data():
                     last_time = datetime.strptime(time_str, fmt)
                     
                     diff_minutes = (now - last_time).total_seconds() / 60
-
                     item = {"name": station_name, "last_time": time_str}
 
                     if diff_minutes <= 60:
@@ -118,8 +123,7 @@ def get_station_data():
                         item["lost_minutes"] = int(diff_minutes)
                         lost_over_3h.append(item)
                 else:
-                    # Nếu không parse được thời gian, mặc định cho vào nhóm mất tín hiệu >3h
-                    lost_over_3h.append({"name": station_name, "last_time": "Không xác định"})
+                    lost_over_3h.append({"name": station_name, "last_time": last_time_str or "Không xác định"})
             except Exception:
                 lost_over_3h.append({"name": station_name, "last_time": last_time_str})
 
@@ -143,21 +147,22 @@ def get_station_data():
 @app.route('/')
 @app.route('/api/report')
 def report_api():
-    data = get_station_data()
+    # Kiểm tra xem có tham số ?debug=true trên URL không
+    debug_param = request.args.get('debug', '').lower() == 'true'
+    data = get_station_data(debug=debug_param)
     return jsonify(data)
 
 # ==================== CẤU HÌNH TELEGRAM BOT ====================
 def format_telegram_message(data):
-    """Tạo định dạng tin nhắn đẹp mắt gửi qua Telegram"""
     if data.get("status") != "success":
-        return f"⚠️ **BÁO LỖI**: {data.get('message', 'Không thể lấy dữ liệu')}"
+        return f"⚠️ **BÁO LỖI**: {data.get('message', 'Không thể lấy dữ liệu. Hãy kiểm tra endpoint debug.')}"
 
     msg = f"📊 **BÁO CÁO TRẠM MƯA TỰ ĐỘNG**\n"
     msg += f"🕒 *Cập nhật lúc:* {data['updated_at']}\n\n"
 
     msg += f"✅ **ĐANG HOẠT ĐỘNG ({data['summary']['active_count']} trạm):**\n"
     if data['active']:
-        for st in data['active'][:10]: # Hiển thị tối đa 10 trạm đầu
+        for st in data['active'][:10]:
             msg += f"• {st['name']} ({st['last_time']})\n"
         if len(data['active']) > 10:
             msg += f"• ... và {len(data['active']) - 10} trạm khác.\n"
@@ -181,24 +186,18 @@ def format_telegram_message(data):
     return msg
 
 async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Xử lý khi người dùng nhắn /start hoặc bất kỳ tin nhắn nào cho Bot"""
     await update.message.reply_text("⏳ Đang cào dữ liệu trạm mưa, vui lòng đợi trong giây lát...")
     data = get_station_data()
     message_text = format_telegram_message(data)
     await update.message.reply_text(message_text, parse_mode='Markdown')
 
-async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await start_command(update, context)
-
 def setup_telegram_bot():
-    """Khởi tạo và lắng nghe Telegram Bot"""
     if TELEGRAM_BOT_TOKEN and TELEGRAM_BOT_TOKEN != "DÁN_TOKEN_BOT_CỦA_BẠN_VÀO_ĐÂY":
         try:
             tg_app = Application.builder().token(TELEGRAM_BOT_TOKEN).build()
             tg_app.add_handler(CommandHandler("start", start_command))
             tg_app.add_handler(CommandHandler("baocao", start_command))
             
-            # Chạy bot không chặn luồng chính
             loop = asyncio.get_event_loop()
             loop.create_task(tg_app.initialize())
             loop.create_task(tg_app.start())
@@ -206,10 +205,7 @@ def setup_telegram_bot():
             print("🤖 Telegram Bot đã khởi chạy thành công!")
         except Exception as e:
             print(f"❌ Không thể khởi chạy Telegram Bot: {e}")
-    else:
-        print("⚠️ Chưa cấu hình TELEGRAM_BOT_TOKEN.")
 
-# Chạy bot khi Flask bắt đầu
 setup_telegram_bot()
 
 if __name__ == "__main__":
