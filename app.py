@@ -3,7 +3,7 @@ import re
 import asyncio
 from datetime import datetime
 from urllib.parse import urljoin
-from flask import Flask, jsonify, request
+from flask import Flask, jsonify
 import requests
 from bs4 import BeautifulSoup
 from telegram import Update
@@ -21,8 +21,8 @@ TELEGRAM_BOT_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN", "8587075816:AAHlm9r7mw
 
 app = Flask(__name__)
 
-def fetch_and_login():
-    """Xử lý khởi tạo phiên, bóc tách ViewState và đăng nhập ASP.NET"""
+# ==================== HÀM CÀO DỮ LIỆU ASP.NET ====================
+def get_station_data():
     session = requests.Session()
     session.headers.update({
         'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
@@ -30,66 +30,46 @@ def fetch_and_login():
         'Accept-Language': 'vi-VN,vi;q=0.9,en-US;q=0.8,en;q=0.7',
     })
 
-    # 1. Tải trang Đăng nhập
-    res_get = session.get(LOGIN_URL, timeout=15)
-    soup_login = BeautifulSoup(res_get.text, 'html.parser')
-
-    form = soup_login.find('form')
-    target_action = LOGIN_URL
-    if form and form.get('action'):
-        target_action = urljoin(LOGIN_URL, form.get('action'))
-
-    payload = {}
-    inputs_found = []
-    inputs = form.find_all('input') if form else soup_login.find_all('input')
-
-    for inp in inputs:
-        name = inp.get('name')
-        if not name:
-            continue
-        val = inp.get('value', '')
-        inp_type = inp.get('type', '').lower()
-        inputs_found.append({"name": name, "type": inp_type, "value": val[:30]})
-        payload[name] = val
-
-    # 2. Xác định tên các ô dữ liệu
-    user_key = None
-    pass_key = None
-    btn_key = None
-
-    for k in payload.keys():
-        k_lower = k.lower()
-        if 'user' in k_lower or 'acc' in k_lower or 'taikhoan' in k_lower or 'txtuser' in k_lower:
-            user_key = k
-        elif 'pass' in k_lower or 'matkhau' in k_lower or 'txtpass' in k_lower:
-            pass_key = k
-        elif 'btn' in k_lower or 'login' in k_lower or 'dangnhap' in k_lower or 'submit' in k_lower:
-            btn_key = k
-
-    payload[user_key or 'txtUsername'] = USERNAME
-    payload[pass_key or 'txtPassword'] = PASSWORD
-
-    if btn_key and btn_key not in payload:
-        payload[btn_key] = 'Đăng nhập'
-
-    # 3. Gửi POST xác thực
-    session.headers.update({'Referer': LOGIN_URL})
-    res_post = session.post(target_action, data=payload, timeout=15, allow_redirects=True)
-
-    # 4. Tải trang Báo cáo
-    res_report = session.get(REPORT_URL, timeout=15)
-    soup_report = BeautifulSoup(res_report.text, 'html.parser')
-
-    return session, res_post, res_report, soup_report, inputs_found, payload
-
-def get_station_data():
     active_list = []
     lost_1h_3h = []
     lost_over_3h = []
 
     try:
-        session, res_post, res_report, soup_report, inputs_found, payload = fetch_and_login()
+        # Bước 1: GET trang Login để bóc tách các token ASP.NET
+        res_get = session.get(LOGIN_URL, timeout=15)
+        soup_login = BeautifulSoup(res_get.text, 'html.parser')
 
+        # Xác định URL xử lý đăng nhập (LoginNew.aspx)
+        form = soup_login.find('form')
+        target_action = LOGIN_URL
+        if form and form.get('action'):
+            target_action = urljoin(LOGIN_URL, form.get('action'))
+
+        # Tự động gom các hidden fields (__VIEWSTATE, __EVENTVALIDATION, ...)
+        payload = {}
+        inputs = form.find_all('input') if form else soup_login.find_all('input')
+
+        for inp in inputs:
+            name = inp.get('name')
+            if not name:
+                continue
+            val = inp.get('value', '')
+            payload[name] = val
+
+        # BẮT CHÍNH XÁC CÁC TRƯỜNG DỮ LIỆU ĐÃ SOI HTML
+        payload['txtUserName'] = USERNAME
+        payload['txtPWD'] = PASSWORD
+        payload['btnSubmit'] = 'Đăng Nhập'
+
+        # Bước 2: Gửi POST xác thực đăng nhập
+        session.headers.update({'Referer': LOGIN_URL})
+        res_post = session.post(target_action, data=payload, timeout=15, allow_redirects=True)
+
+        # Bước 3: Tải trang Báo cáo chi tiết dữ liệu
+        res_report = session.get(REPORT_URL, timeout=15)
+        soup_report = BeautifulSoup(res_report.text, 'html.parser')
+
+        # Tìm bảng chứa dữ liệu
         tables = soup_report.find_all('table')
         target_table = None
 
@@ -102,17 +82,13 @@ def get_station_data():
         if not target_table:
             return {
                 "status": "error",
-                "message": "Không tìm thấy bảng dữ liệu trạm trên trang web.",
-                "debug_info": {
-                    "report_url": res_report.url,
-                    "inputs_detected": inputs_found,
-                    "page_title": soup_report.title.string if soup_report.title else None
-                }
+                "message": "Không tìm thấy bảng dữ liệu trạm trên trang web sau khi đăng nhập."
             }
 
         rows = target_table.find_all('tr')
         now = datetime.now()
 
+        # Bước 4: Duyệt và phân loại trạng thái trạm
         for row in rows[1:]:
             cols = [td.get_text(strip=True) for td in row.find_all(['td', 'th'])]
             if len(cols) < 2:
@@ -220,9 +196,9 @@ def setup_telegram_bot():
             loop.create_task(tg_app.initialize())
             loop.create_task(tg_app.start())
             loop.create_task(tg_app.updater.start_polling())
-            print("🤖 Telegram Bot đã khởi chạy!")
+            print("🤖 Telegram Bot đã khởi chạy thành công!")
         except Exception as e:
-            print(f"❌ Lỗi Bot: {e}")
+            print(f"❌ Lỗi khởi chạy Bot: {e}")
 
 setup_telegram_bot()
 
