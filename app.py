@@ -27,8 +27,10 @@ def get_station_data():
     session = requests.Session()
     session.headers.update({
         'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-        'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
+        'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8',
         'Accept-Language': 'vi-VN,vi;q=0.9,en-US;q=0.8,en;q=0.7',
+        'Connection': 'keep-alive',
+        'Upgrade-Insecure-Requests': '1'
     })
 
     active_list = []
@@ -36,7 +38,7 @@ def get_station_data():
     lost_over_3h = []
 
     try:
-        # BƯỚC 1: GET trang Login để lấy ViewState & Cookies
+        # BƯỚC 1: GET trang Login để bóc tách TOÀN BỘ hidden input (__VIEWSTATE, __VIEWSTATEGENERATOR, __EVENTVALIDATION...)
         res_get = session.get(LOGIN_URL, timeout=15)
         soup_login = BeautifulSoup(res_get.text, 'html.parser')
 
@@ -46,65 +48,84 @@ def get_station_data():
             target_action = urljoin(LOGIN_URL, form.get('action'))
 
         payload = {}
-        inputs = form.find_all('input') if form else soup_login.find_all('input')
+        inputs = soup_login.find_all('input')
         for inp in inputs:
             name = inp.get('name')
             if name:
                 payload[name] = inp.get('value', '')
 
+        # Gán thông tin đăng nhập theo chuẩn form HTML đã kiểm tra
         payload['txtUserName'] = USERNAME
         payload['txtPWD'] = PASSWORD
         payload['btnSubmit'] = 'Đăng Nhập'
 
-        # BƯỚC 2: POST Đăng nhập
-        session.headers.update({'Referer': LOGIN_URL})
+        # BƯỚC 2: Gửi POST Đăng nhập
+        session.headers.update({
+            'Referer': LOGIN_URL,
+            'Content-Type': 'application/x-www-form-urlencoded',
+            'Origin': BASE_URL
+        })
+        
         res_post = session.post(target_action, data=payload, timeout=15, allow_redirects=True)
 
-        # BƯỚC 3: Tải trang Báo cáo chi tiết
-        session.headers.update({'Referer': res_post.url})
+        # BƯỚC 3: Truy cập trang báo cáo với Header giả lập chuyển trang thành công
+        session.headers.update({
+            'Referer': res_post.url,
+            'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8'
+        })
+        
         res_report = session.get(REPORT_URL, timeout=15)
         soup_report = BeautifulSoup(res_report.text, 'html.parser')
 
-        # Đọc tiêu đề trang để chẩn đoán
-        page_title = soup_report.title.string.strip() if soup_report.title else "Không có tiêu đề"
-
-        # BƯỚC 4: Tìm bảng dữ liệu (Tìm tất cả các table)
+        # BƯỚC 4: Tìm bảng chứa dữ liệu
         tables = soup_report.find_all('table')
         target_table = None
 
         for t in tables:
             rows = t.find_all('tr')
             if len(rows) >= 2:
-                target_table = t
-                break
+                # Kiểm tra sơ bộ xem bảng có chứa text dữ liệu trạm không
+                text_content = t.get_text()
+                if any(kw in text_content for kw in ["Trạm", "trạm", "Thời gian", "Lượng mưa", "STT"]):
+                    target_table = t
+                    break
+                elif not target_table and len(rows) > 3:
+                    target_table = t
 
+        # Nếu không thấy bảng ở trang chính, quét tiếp trong thẻ iframe (nếu có)
         if not target_table:
-            # Nếu không tìm thấy table, kiểm tra xem có iframe nào chứa báo cáo không
             iframes = soup_report.find_all('iframe')
-            if iframes:
-                iframe_src = iframes[0].get('src')
-                if iframe_src:
-                    iframe_url = urljoin(REPORT_URL, iframe_src)
+            for iframe in iframes:
+                src = iframe.get('src')
+                if src:
+                    iframe_url = urljoin(REPORT_URL, src)
                     res_iframe = session.get(iframe_url, timeout=15)
                     soup_iframe = BeautifulSoup(res_iframe.text, 'html.parser')
                     for t in soup_iframe.find_all('table'):
                         if len(t.find_all('tr')) >= 2:
                             target_table = t
                             break
+                if target_table:
+                    break
 
         if not target_table:
+            # Thu thập thông tin màn hình để phản hồi chẩn đoán
+            page_title = soup_report.title.string.strip() if soup_report.title else "N/A"
             return {
                 "status": "error",
-                "message": "Đã đăng nhập nhưng trang không trả về bảng dữ liệu trạm.",
-                "tieu_de_trang": page_title,
-                "url_cuoi": res_report.url,
-                "so_bang_tim_thay": len(tables)
+                "message": "Không tìm thấy bảng dữ liệu trạm trên trang web.",
+                "debug_info": {
+                    "page_title": page_title,
+                    "final_url": res_report.url,
+                    "tables_found": len(tables),
+                    "is_login_page": "txtPWD" in res_report.text
+                }
             }
 
         rows = target_table.find_all('tr')
         now = datetime.now()
 
-        # BƯỚC 5: Phân loại trạm
+        # BƯỚC 5: Trích xuất và phân loại trạm
         for row in rows[1:]:
             cols = [td.get_text(strip=True) for td in row.find_all(['td', 'th'])]
             if len(cols) < 2:
@@ -155,11 +176,11 @@ def get_station_data():
     except Exception as e:
         return {
             "status": "error",
-            "message": f"Ngoại lệ xử lý: {str(e)}",
+            "message": f"Lỗi xử lý: {str(e)}",
             "traceback": traceback.format_exc()
         }
 
-# ==================== FLASK API & TELEGRAM ====================
+# ==================== FLASK API & TELEGRAM BOT ====================
 @app.route('/')
 @app.route('/api/report')
 def report_api():
