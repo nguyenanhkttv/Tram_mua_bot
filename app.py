@@ -1,4 +1,5 @@
 import os
+import re
 import requests
 from datetime import datetime, timedelta
 from flask import Flask, request, jsonify
@@ -10,7 +11,11 @@ TELEGRAM_API_URL = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}"
 
 app = Flask(__name__)
 
-# ==================== HÀM LẤY DỮ LIỆU IWEATHER ====================
+# Lưu danh sách Chat ID nhận thông báo tự động (lưu tạm RAM)
+REGISTERED_CHATS = set()
+LAST_ALERT_COUNT = 0
+
+# ==================== HÀM BÓC TÁCH DỮ LIỆU IWEATHER ====================
 def get_iweather_storm_warning(province_keyword="Thanh Hóa"):
     headers = {
         'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
@@ -18,7 +23,7 @@ def get_iweather_storm_warning(province_keyword="Thanh Hóa"):
         'Accept': 'application/json, text/plain, */*'
     }
     
-    # Tính giờ VN (UTC+7)
+    # Tính giờ Việt Nam (UTC+7)
     now_vn = datetime.utcnow() + timedelta(hours=7)
     
     try:
@@ -26,24 +31,23 @@ def get_iweather_storm_warning(province_keyword="Thanh Hóa"):
         if res.status_code != 200:
             return {"status": "error", "message": f"Không kết nối được iWeather (HTTP {res.status_code})"}
 
-        data = res.json()
+        raw_text = res.text
         matched_alerts = []
-        items = data if isinstance(data, list) else data.get('data', []) or data.get('features', [])
         
-        for item in items:
-            item_str = str(item)
-            if province_keyword.lower() in item_str.lower():
-                if isinstance(item, dict):
-                    props = item.get('properties', item)
-                    info = {
-                        "location": props.get('location', props.get('name', 'Thanh Hóa')),
-                        "intensity": props.get('dBZ', props.get('intensity', 'Đang phát triển')),
-                        "message": props.get('message', props.get('description', '')),
-                        "time": props.get('time', props.get('updated_at', now_vn.strftime('%H:%M %d/%m/%Y')))
-                    }
-                    matched_alerts.append(info)
-                else:
-                    matched_alerts.append({"raw": str(item)})
+        # Regex tìm tất cả các cụm địa danh kết thúc bằng "Tỉnh Thanh Hóa" hoặc "Thanh Hoá"
+        pattern = r'([^"\[\]\\]+?Tỉnh Thanh Hoá|[^"\[\]\\]+?Tỉnh Thanh Hóa)'
+        matches = re.findall(pattern, raw_text, re.IGNORECASE)
+
+        # Lọc bỏ trùng lặp và làm sạch chuỗi
+        unique_locations = list(set([m.strip(' ",') for m in matches]))
+
+        for loc in unique_locations:
+            matched_alerts.append({
+                "location": loc,
+                "intensity": "Mây dông / Sét phát triển",
+                "message": "Phát hiện vùng mây đối lưu nguy hiểm gây dông sét",
+                "time": now_vn.strftime('%H:%M %d/%m/%Y')
+            })
 
         return {
             "status": "success",
@@ -57,6 +61,7 @@ def get_iweather_storm_warning(province_keyword="Thanh Hóa"):
     except Exception as e:
         return {"status": "error", "message": f"Lỗi xử lý dữ liệu: {str(e)}"}
 
+# ==================== HÀM GỬI TIN NHẮN TELEGRAM ====================
 def send_telegram_message(chat_id, text):
     url = f"{TELEGRAM_API_URL}/sendMessage"
     payload = {
@@ -69,13 +74,41 @@ def send_telegram_message(chat_id, text):
     except Exception as e:
         print(f"Lỗi gửi tin nhắn Telegram: {e}")
 
+def broadcast_alert(text):
+    for chat_id in REGISTERED_CHATS:
+        send_telegram_message(chat_id, text)
+
 # ==================== WEB ROUTES ====================
 @app.route('/')
-@app.route('/api/dongset')
-def dongset_api():
-    return jsonify(get_iweather_storm_warning("Thanh Hóa"))
+def home():
+    global LAST_ALERT_COUNT
+    # Khi cron-job.org ping vào đây, bot tự động kiểm tra cảnh báo
+    data = get_iweather_storm_warning("Thanh Hóa")
+    
+    if data.get("status") == "success":
+        current_count = data.get("count", 0)
+        
+        # Nếu phát hiện dông sét VÀ số lượng vùng dông tăng/thay đổi -> BẮN TỰ ĐỘNG
+        if data.get("has_warning") and current_count != LAST_ALERT_COUNT:
+            msg = f"⚠️ **CẢNH BÁO TỰ ĐỘNG: PHÁT HIỆN DÔNG SÉT TẠI THANH HÓA!**\n"
+            msg += f"🕒 *Thời gian quét:* {data['updated_at']}\n"
+            msg += f"📍 **Số khu vực phát hiện:** {current_count}\n"
+            for idx, alert in enumerate(data['alerts'], 1):
+                msg += f"\n**{idx}.** {alert['location']}\n"
+            
+            msg += "\n🌐 Xem trực quan Radar: https://iweather.gov.vn/dashboard?areaRadar=COM&productRadar=CMAX"
+            broadcast_alert(msg)
+            LAST_ALERT_COUNT = current_count
+        elif not data.get("has_warning"):
+            LAST_ALERT_COUNT = 0
 
-# Route nhận webhook từ Telegram
+    return jsonify({
+        "status": "running", 
+        "active_chats": list(REGISTERED_CHATS),
+        "last_alert_count": LAST_ALERT_COUNT
+    })
+
+# Webhook nhận lệnh từ Telegram
 @app.route(f'/{TELEGRAM_BOT_TOKEN}', methods=['POST'])
 def telegram_webhook():
     update = request.get_json()
@@ -84,21 +117,23 @@ def telegram_webhook():
         chat_id = message["chat"]["id"]
         text = message.get("text", "")
 
+        # Tự động đăng ký Chat ID người dùng vào danh sách nhận tin tự động
+        REGISTERED_CHATS.add(chat_id)
+
         if text.startswith("/start") or text.startswith("/dong") or text.startswith("/dongset"):
-            send_telegram_message(chat_id, "⚡ Đang quét mây đối lưu & dông sét từ iWeather...")
+            send_telegram_message(chat_id, "⚡ Đang quét dữ liệu mây đối lưu & dông sét từ iWeather...")
             
             data = get_iweather_storm_warning("Thanh Hóa")
             
             if data.get("status") == "success":
                 if data.get("has_warning"):
-                    msg = f"🚨 **CẢNH BÁO DÔNG SÉT CẤP BÁCH - THANH HÓA!**\n"
-                    msg += f"🕒 *Thời gian:* {data['updated_at']}\n"
-                    msg += f"📍 **Số vùng dông phát hiện:** {data['count']}\n"
+                    msg = f"🚨 **CẢNH BÁO DÔNG SÉT TẠI THANH HÓA!**\n"
+                    msg += f"🕒 *Cập nhật:* {data['updated_at']}\n"
+                    msg += f"📍 **Phát hiện {data['count']} khu vực có mây dông:**\n"
                     for idx, alert in enumerate(data['alerts'], 1):
-                        msg += f"\n**Vùng {idx}:** {alert.get('location', 'Thanh Hóa')}\n"
-                        if alert.get('message'): msg += f"• *Nội dung:* {alert['message']}\n"
-                        if alert.get('intensity'): msg += f"• *Cường độ (dBZ):* {alert['intensity']}\n"
-                    msg += "\n🌐 Xem Radar: https://iweather.gov.vn/dashboard?areaRadar=COM&productRadar=CMAX"
+                        msg += f"\n**{idx}.** {alert['location']}"
+                    
+                    msg += "\n\n🌐 **Bản đồ Radar:** https://iweather.gov.vn/dashboard?areaRadar=COM&productRadar=CMAX"
                 else:
                     msg = f"✅ **AN TOÀN ({data['updated_at']}):** Hiện chưa phát hiện mây dông hay cảnh báo sét tại khu vực Thanh Hóa."
             else:
