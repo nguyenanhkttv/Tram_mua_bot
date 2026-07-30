@@ -1,18 +1,16 @@
 import os
-import threading
 import requests
 from datetime import datetime
-from flask import Flask, jsonify
-from telegram import Update
-from telegram.ext import Application, CommandHandler, ContextTypes
+from flask import Flask, request, jsonify
 
-# API iWeather Dông Sét
+# ==================== CẤU HÌNH ====================
 IWEATHER_STORM_URL = "https://iweather.gov.vn/product/warningstorm?token=null"
 TELEGRAM_BOT_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN", "8587075816:AAHlm9r7mwCjEQlgmx6KjoZ8AE7Vd844x6s")
+TELEGRAM_API_URL = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}"
 
 app = Flask(__name__)
 
-# ==================== HÀM QUÉT DÔNG SÉT IWEATHER ====================
+# ==================== HÀM LẤY DỮ LIỆU IWEATHER ====================
 def get_iweather_storm_warning(province_keyword="Thanh Hóa"):
     headers = {
         'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
@@ -27,7 +25,6 @@ def get_iweather_storm_warning(province_keyword="Thanh Hóa"):
 
         data = res.json()
         matched_alerts = []
-
         items = data if isinstance(data, list) else data.get('data', []) or data.get('features', [])
         
         for item in items:
@@ -57,49 +54,66 @@ def get_iweather_storm_warning(province_keyword="Thanh Hóa"):
     except Exception as e:
         return {"status": "error", "message": f"Lỗi xử lý dữ liệu: {str(e)}"}
 
-# ==================== FLASK ROUTING ====================
+def send_telegram_message(chat_id, text):
+    url = f"{TELEGRAM_API_URL}/sendMessage"
+    payload = {
+        "chat_id": chat_id,
+        "text": text,
+        "parse_mode": "Markdown"
+    }
+    try:
+        requests.post(url, json=payload, timeout=5)
+    except Exception as e:
+        print(f"Lỗi gửi tin nhắn Telegram: {e}")
+
+# ==================== WEB ROUTES ====================
 @app.route('/')
 @app.route('/api/dongset')
 def dongset_api():
     return jsonify(get_iweather_storm_warning("Thanh Hóa"))
 
-# ==================== TELEGRAM BOT COMMANDS ====================
-async def dongset_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text("⚡ Đang quét mây đối lưu & dông sét từ iWeather...")
-    data = get_iweather_storm_warning("Thanh Hóa")
+# Route nhận webhook từ Telegram
+@app.route(f'/{TELEGRAM_BOT_TOKEN}', methods=['POST'])
+def telegram_webhook():
+    update = request.get_json()
+    if update and "message" in update:
+        message = update["message"]
+        chat_id = message["chat"]["id"]
+        text = message.get("text", "")
 
-    if data.get("status") == "success":
-        if data.get("has_warning"):
-            msg = f"🚨 **CẢNH BÁO DÔNG SÉT CẤP BÁCH - THANH HÓA!**\n"
-            msg += f"🕒 *Thời gian:* {data['updated_at']}\n"
-            msg += f"📍 **Số vùng dông phát hiện:** {data['count']}\n"
-            for idx, alert in enumerate(data['alerts'], 1):
-                msg += f"\n**Vùng {idx}:** {alert.get('location', 'Thanh Hóa')}\n"
-                if alert.get('message'): msg += f"• *Nội dung:* {alert['message']}\n"
-                if alert.get('intensity'): msg += f"• *Cường độ (dBZ):* {alert['intensity']}\n"
-            msg += "\n🌐 Xem Radar: https://iweather.gov.vn/dashboard?areaRadar=COM&productRadar=CMAX"
-        else:
-            msg = f"✅ **AN TOÀN ({data['updated_at']}):** Hiện chưa phát hiện mây dông hay cảnh báo sét tại khu vực Thanh Hóa."
-    else:
-        msg = f"❌ Lỗi: {data.get('message')}"
+        if text.startswith("/start") or text.startswith("/dong") or text.startswith("/dongset"):
+            # Gửi tin nhắn chờ
+            send_telegram_message(chat_id, "⚡ Đang quét mây đối lưu & dông sét từ iWeather...")
+            
+            # Lấy dữ liệu dông sét
+            data = get_iweather_storm_warning("Thanh Hóa")
+            
+            if data.get("status") == "success":
+                if data.get("has_warning"):
+                    msg = f"🚨 **CẢNH BÁO DÔNG SÉT CẤP BÁCH - THANH HÓA!**\n"
+                    msg += f"🕒 *Thời gian:* {data['updated_at']}\n"
+                    msg += f"📍 **Số vùng dông phát hiện:** {data['count']}\n"
+                    for idx, alert in enumerate(data['alerts'], 1):
+                        msg += f"\n**Vùng {idx}:** {alert.get('location', 'Thanh Hóa')}\n"
+                        if alert.get('message'): msg += f"• *Nội dung:* {alert['message']}\n"
+                        if alert.get('intensity'): msg += f"• *Cường độ (dBZ):* {alert['intensity']}\n"
+                    msg += "\n🌐 Xem Radar: https://iweather.gov.vn/dashboard?areaRadar=COM&productRadar=CMAX"
+                else:
+                    msg = f"✅ **AN TOÀN ({data['updated_at']}):** Hiện chưa phát hiện mây dông hay cảnh báo sét tại khu vực Thanh Hóa."
+            else:
+                msg = f"❌ Lỗi: {data.get('message')}"
 
-    await update.message.reply_text(msg, parse_mode='Markdown')
+            send_telegram_message(chat_id, msg)
 
-# ==================== KÍCH HOẠT BOT TELEGRAM ====================
-def start_telegram_bot():
-    try:
-        tg_app = Application.builder().token(TELEGRAM_BOT_TOKEN).build()
-        tg_app.add_handler(CommandHandler("start", dongset_command))
-        tg_app.add_handler(CommandHandler("dongset", dongset_command))
-        tg_app.add_handler(CommandHandler("dong", dongset_command))
-        print("🤖 Bot Telegram đã khởi chạy thành công!")
-        tg_app.run_polling(drop_pending_updates=True, close_loop=False)
-    except Exception as e:
-        print(f"❌ Lỗi Bot Telegram: {e}")
+    return "OK", 200
 
-# Kích hoạt Thread ngay khi file app.py được load
-bot_thread = threading.Thread(target=start_telegram_bot, daemon=True)
-bot_thread.start()
+# Route kích hoạt/đăng ký Webhook tự động
+@app.route('/set_webhook')
+def set_webhook():
+    host_url = request.host_url.rstrip('/')
+    webhook_url = f"{host_url}/{TELEGRAM_BOT_TOKEN}"
+    res = requests.get(f"{TELEGRAM_API_URL}/setWebhook?url={webhook_url}")
+    return jsonify(res.json())
 
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 5000))
