@@ -72,8 +72,8 @@ def send_telegram_message(chat_id, text):
 def dongset_api():
     return jsonify(get_iweather_storm_warning("Thanh Hóa"))
 
-# Route nhận webhook từ Telegram
-@app.route(f'/{TELEGRAM_BOT_TOKEN}', methods=['POST'])
+# Route cố định nhận Webhook từ Telegram
+@app.route('/webhook', methods=['POST'])
 def telegram_webhook():
     update = request.get_json()
     if update and "message" in update:
@@ -82,10 +82,8 @@ def telegram_webhook():
         text = message.get("text", "")
 
         if text.startswith("/start") or text.startswith("/dong") or text.startswith("/dongset"):
-            # Gửi tin nhắn chờ
             send_telegram_message(chat_id, "⚡ Đang quét mây đối lưu & dông sét từ iWeather...")
             
-            # Lấy dữ liệu dông sét
             data = get_iweather_storm_warning("Thanh Hóa")
             
             if data.get("status") == "success":
@@ -106,14 +104,6 @@ def telegram_webhook():
             send_telegram_message(chat_id, msg)
 
     return "OK", 200
-
-# Route kích hoạt/đăng ký Webhook tự động
-@app.route('/set_webhook')
-def set_webhook():
-    host_url = request.host_url.rstrip('/')
-    webhook_url = f"{host_url}/{TELEGRAM_BOT_TOKEN}"
-    res = requests.get(f"{TELEGRAM_API_URL}/setWebhook?url={webhook_url}")
-    return jsonify(res.json())
 
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 5000))
