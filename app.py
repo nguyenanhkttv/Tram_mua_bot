@@ -85,19 +85,20 @@ async def dongset_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     await update.message.reply_text(msg, parse_mode='Markdown')
 
-def run_bot():
+# ==================== KÍCH HOẠT BOT TELEGRAM ====================
+def start_telegram_bot():
     try:
         tg_app = Application.builder().token(TELEGRAM_BOT_TOKEN).build()
         tg_app.add_handler(CommandHandler("start", dongset_command))
         tg_app.add_handler(CommandHandler("dongset", dongset_command))
         tg_app.add_handler(CommandHandler("dong", dongset_command))
-        print("🤖 Bot Telegram dông sét bắt đầu nhận lệnh...")
-        tg_app.run_polling(drop_pending_updates=True)
+        print("🤖 Bot Telegram đã khởi chạy thành công!")
+        tg_app.run_polling(drop_pending_updates=True, close_loop=False)
     except Exception as e:
         print(f"❌ Lỗi Bot Telegram: {e}")
 
-# Chạy Bot Telegram trên thread riêng
-bot_thread = threading.Thread(target=run_bot, daemon=True)
+# Kích hoạt Thread ngay khi file app.py được load
+bot_thread = threading.Thread(target=start_telegram_bot, daemon=True)
 bot_thread.start()
 
 if __name__ == "__main__":
