@@ -1,6 +1,6 @@
 import os
 import requests
-from datetime import datetime
+from datetime import datetime, timedelta
 from flask import Flask, request, jsonify
 
 # ==================== CẤU HÌNH ====================
@@ -17,6 +17,9 @@ def get_iweather_storm_warning(province_keyword="Thanh Hóa"):
         'Referer': 'https://iweather.gov.vn/dashboard?areaRadar=COM&productRadar=CMAX',
         'Accept': 'application/json, text/plain, */*'
     }
+    
+    # Tính giờ VN (UTC+7)
+    now_vn = datetime.utcnow() + timedelta(hours=7)
     
     try:
         res = requests.get(IWEATHER_STORM_URL, headers=headers, timeout=12)
@@ -36,7 +39,7 @@ def get_iweather_storm_warning(province_keyword="Thanh Hóa"):
                         "location": props.get('location', props.get('name', 'Thanh Hóa')),
                         "intensity": props.get('dBZ', props.get('intensity', 'Đang phát triển')),
                         "message": props.get('message', props.get('description', '')),
-                        "time": props.get('time', props.get('updated_at', datetime.now().strftime('%H:%M %d/%m/%Y')))
+                        "time": props.get('time', props.get('updated_at', now_vn.strftime('%H:%M %d/%m/%Y')))
                     }
                     matched_alerts.append(info)
                 else:
@@ -48,7 +51,7 @@ def get_iweather_storm_warning(province_keyword="Thanh Hóa"):
             "has_warning": len(matched_alerts) > 0,
             "count": len(matched_alerts),
             "alerts": matched_alerts,
-            "updated_at": datetime.now().strftime("%H:%M:%S %d/%m/%Y")
+            "updated_at": now_vn.strftime("%H:%M:%S %d/%m/%Y")
         }
 
     except Exception as e:
@@ -72,8 +75,8 @@ def send_telegram_message(chat_id, text):
 def dongset_api():
     return jsonify(get_iweather_storm_warning("Thanh Hóa"))
 
-# Route cố định nhận Webhook từ Telegram
-@app.route('/webhook', methods=['POST'])
+# Route nhận webhook từ Telegram
+@app.route(f'/{TELEGRAM_BOT_TOKEN}', methods=['POST'])
 def telegram_webhook():
     update = request.get_json()
     if update and "message" in update:
