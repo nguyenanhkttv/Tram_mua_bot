@@ -13,6 +13,7 @@ from telegram.ext import Application, CommandHandler, ContextTypes
 # ==================== CẤU HÌNH HỆ THỐNG ====================
 BASE_URL = "http://222.255.11.82"
 LOGIN_URL = f"{BASE_URL}/Login.aspx"
+DEFAULT_URL = f"{BASE_URL}/Default.aspx"
 REPORT_URL = f"{BASE_URL}/Modules/MuaTudong/BaoCaoChiTietDuLieu.aspx"
 
 USERNAME = "admin"
@@ -38,7 +39,7 @@ def get_station_data():
     lost_over_3h = []
 
     try:
-        # BƯỚC 1: GET trang Login để bóc tách TOÀN BỘ hidden input (__VIEWSTATE, __VIEWSTATEGENERATOR, __EVENTVALIDATION...)
+        # BƯỚC 1: GET trang Login để khởi tạo Session Cookie và lấy token Hidden Inputs
         res_get = session.get(LOGIN_URL, timeout=15)
         soup_login = BeautifulSoup(res_get.text, 'html.parser')
 
@@ -54,37 +55,35 @@ def get_station_data():
             if name:
                 payload[name] = inp.get('value', '')
 
-        # Gán thông tin đăng nhập theo chuẩn form HTML đã kiểm tra
+        # Gán thông tin đăng nhập
         payload['txtUserName'] = USERNAME
         payload['txtPWD'] = PASSWORD
         payload['btnSubmit'] = 'Đăng Nhập'
 
-        # BƯỚC 2: Gửi POST Đăng nhập
+        # BƯỚC 2: POST xác thực Đăng nhập
         session.headers.update({
             'Referer': LOGIN_URL,
             'Content-Type': 'application/x-www-form-urlencoded',
             'Origin': BASE_URL
         })
-        
         res_post = session.post(target_action, data=payload, timeout=15, allow_redirects=True)
 
-        # BƯỚC 3: Truy cập trang báo cáo với Header giả lập chuyển trang thành công
-        session.headers.update({
-            'Referer': res_post.url,
-            'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8'
-        })
-        
+        # BƯỚC 3: TRUY CẬP TRANG CHỦ DEFAULT.ASPX ĐỂ KÍCH HOẠT PHIÊN DỮ LIỆU
+        session.headers.update({'Referer': res_post.url})
+        res_default = session.get(DEFAULT_URL, timeout=15)
+
+        # BƯỚC 4: Truy cập trang Báo cáo chi tiết sau khi đã qua Default.aspx
+        session.headers.update({'Referer': DEFAULT_URL})
         res_report = session.get(REPORT_URL, timeout=15)
         soup_report = BeautifulSoup(res_report.text, 'html.parser')
 
-        # BƯỚC 4: Tìm bảng chứa dữ liệu
+        # BƯỚC 5: Tìm bảng dữ liệu
         tables = soup_report.find_all('table')
         target_table = None
 
         for t in tables:
             rows = t.find_all('tr')
             if len(rows) >= 2:
-                # Kiểm tra sơ bộ xem bảng có chứa text dữ liệu trạm không
                 text_content = t.get_text()
                 if any(kw in text_content for kw in ["Trạm", "trạm", "Thời gian", "Lượng mưa", "STT"]):
                     target_table = t
@@ -92,7 +91,7 @@ def get_station_data():
                 elif not target_table and len(rows) > 3:
                     target_table = t
 
-        # Nếu không thấy bảng ở trang chính, quét tiếp trong thẻ iframe (nếu có)
+        # Kiểm tra iframe phụ nếu trang chính chứa iframe
         if not target_table:
             iframes = soup_report.find_all('iframe')
             for iframe in iframes:
@@ -109,7 +108,6 @@ def get_station_data():
                     break
 
         if not target_table:
-            # Thu thập thông tin màn hình để phản hồi chẩn đoán
             page_title = soup_report.title.string.strip() if soup_report.title else "N/A"
             return {
                 "status": "error",
@@ -125,7 +123,7 @@ def get_station_data():
         rows = target_table.find_all('tr')
         now = datetime.now()
 
-        # BƯỚC 5: Trích xuất và phân loại trạm
+        # BƯỚC 6: Trích xuất và phân loại trạm
         for row in rows[1:]:
             cols = [td.get_text(strip=True) for td in row.find_all(['td', 'th'])]
             if len(cols) < 2:
