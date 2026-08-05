@@ -310,9 +310,9 @@ def scrape_lu_quet_sat_lo_cap_xa():
                     else:
                         commune_clean = commune
 
-                    # Đánh giá xem xã có thuộc Thanh Hóa hay không (Dựa vào tinh_id==38 hoặc chứa từ khóa)
+                    # Đánh giá xem xã có thuộc Thanh Hóa hay không (Dựa vào tinh_id==33 hoặc chứa từ khóa)
                     full_str = f"{commune} {province}".lower()
-                    is_thanh_hoa = (tinh_id == "38") or any(kw in full_str for kw in thanh_hoa_keywords)
+                    is_thanh_hoa = (tinh_id == "33") or any(kw in full_str for kw in thanh_hoa_keywords)
 
                     # Lưu danh sách xã
                     if commune_clean and is_thanh_hoa:
