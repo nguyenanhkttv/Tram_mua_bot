@@ -1,3 +1,7 @@
-flask
+Flask
+flask-cors
 requests
-python-telegram-bot
+beautifulsoup4
+python-telegram-bot>=20.0
+gunicorn
+Pillow==10.2.0
