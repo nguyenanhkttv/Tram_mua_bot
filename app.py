@@ -322,7 +322,9 @@ def telegram_webhook():
 
     return "OK", 200
 
+# Gọi init_db() ở đây để Gunicorn luôn tạo bảng DB khi khởi động
+init_db()
+
 if __name__ == "__main__":
-    init_db()
-    port = int(os.environ.get("PORT", 5000))
+    port = int(os.environ.get("PORT", 10000))
     app.run(host="0.0.0.0", port=port)
