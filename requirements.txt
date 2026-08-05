@@ -4,4 +4,4 @@ requests
 beautifulsoup4
 python-telegram-bot>=20.0
 gunicorn
-Pillow==10.2.0
+Pillow>=10.2.0
