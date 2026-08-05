@@ -264,63 +264,98 @@ def scrape_kttv_thanh_hoa(url, category_name):
         print(f"❌ Lỗi cào KTTV Thanh Hóa: {e}")
 
 # ==================== DẠNG 3: WEB LŨ QUÉT SẠT LỞ CẤP XÃ (NCHMF) ====================
+URL_LU_QUET_APIS = [
+    "https://luquetsatlo.nchmf.gov.vn/Home/getThongTinXaCBTheoVungVe",
+    "https://luquetsatlo.nchmf.gov.vn/Home/InitTrongDiemTheoSLLQ",
+    "https://luquetsatlo.nchmf.gov.vn/Home/getThongTinXaCB"
+]
+
 def scrape_lu_quet_sat_lo_cap_xa():
     headers = {
         'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)',
         'Referer': 'https://luquetsatlo.nchmf.gov.vn/'
     }
-    try:
-        res = requests.post(URL_LU_QUET_API, headers=headers, timeout=12)
-        if res.status_code == 200:
-            data = res.json()
-            active_communes = []
-            features = data if isinstance(data, list) else data.get("features", [])
+    
+    active_communes = []
+    # Danh sách các huyện/thành miền núi Thanh Hóa để nhận diện chính xác
+    thanh_hoa_keywords = [
+        "mường lát", "quan sơn", "quan hóa", "bá thước", "lang chánh", 
+        "thường xuân", "ngọc lặc", "như xuân", "như thanh", "cẩm thủy", 
+        "thạch thành", "thanh hóa", "thanh hoá"
+    ]
+
+    for api_url in URL_LU_QUET_APIS:
+        try:
+            res = requests.post(api_url, headers=headers, timeout=10)
+            if res.status_code == 200:
+                data = res.json()
+                items = data if isinstance(data, list) else data.get("features", data.get("data", []))
+                
+                if not isinstance(items, list):
+                    continue
+
+                for item in items:
+                    # Bóc tách theo đúng các Field phát hiện trong DevTools Preview
+                    props = item.get("properties", item) if isinstance(item, dict) else {}
+                    
+                    # Tên xã từ JSON: xaname_2cap, ten_xa, TenXa, xa
+                    commune = str(props.get("xaname_2cap") or props.get("ten_xa") or props.get("TenXa") or props.get("xa") or "").strip()
+                    # Tên tỉnh/huyện từ JSON
+                    province = str(props.get("tentinh") or props.get("ten_tinh") or props.get("TenTinh") or "").strip()
+                    tinh_id = str(props.get("tinh_id") or "")
+
+                    # Bỏ chuỗi thừa "Xã " nếu bị lặp
+                    if commune.lower().startswith("xã "):
+                        commune_clean = commune[3:].strip()
+                    else:
+                        commune_clean = commune
+
+                    # Đánh giá xem xã có thuộc Thanh Hóa hay không (Dựa vào tinh_id==38 hoặc chứa từ khóa)
+                    full_str = f"{commune} {province}".lower()
+                    is_thanh_hoa = (tinh_id == "38") or any(kw in full_str for kw in thanh_hoa_keywords)
+
+                    # Lưu danh sách xã
+                    if commune_clean and is_thanh_hoa:
+                        label = f"Xã {commune_clean}"
+                        if label not in active_communes:
+                            active_communes.append(label)
+                
+                if active_communes:
+                    break # Đã lấy được dữ liệu thành công
+        except Exception as e:
+            print(f"⚠️ Lỗi thử API NCHMF ({api_url}): {e}")
+
+    # Tiến hành phát Infographic & Thông báo Telegram
+    if active_communes:
+        now_vn = (datetime.utcnow() + timedelta(hours=7)).strftime('%H:%M %d/%m/%Y')
+        alert_id = f"luquet_th_{len(active_communes)}_{datetime.now().strftime('%Y%m%d%H')}"
+        
+        if not is_news_sent(alert_id):
+            title = f"CẢNH BÁO LŨ QUÉT & SẠT LỞ ĐẤT TẠI {len(active_communes)} XÃ THUỘC THANH HÓA"
+            parsed_data = {
+                "rainfall": "Nguy cơ cao trong 06h tới",
+                "risk_level": "CẤP 1 - TRUNG BÌNH / CAO",
+                "locations": active_communes,
+                "summary": [f"Mô hình NCHMF phát hiện {len(active_communes)} xã/phường có nguy cơ lũ quét, sạt lở đất."]
+            }
             
-            thanh_hoa_districts = ["mường lát", "quan sơn", "quan hóa", "bá thước", "lang chánh", "thường xuân", "ngọc lặc", "như xuân", "như thanh", "cẩm thủy", "thạch thành"]
+            # Tạo Infographic động
+            img_bytes = create_infographic("CẢNH BÁO LŨ QUÉT & SẠT LỞ CẤP XÃ", title, parsed_data, now_vn)
+            
+            # Soạn caption Telegram
+            caption = f"🚨 **CẢNH BÁO LŨ QUÉT & SẠT LỞ ĐẤT (CẤP XÃ)**\n"
+            caption += f"🕒 *Thời gian:* {now_vn}\n"
+            caption += f"📍 **Tổng số địa bàn nguy cơ:** {len(active_communes)} xã\n\n"
+            caption += "🔻 **DANH SÁCH CHI TIẾT:**\n"
+            for idx, xa in enumerate(active_communes, 1):
+                caption += f"  {idx}. {xa}\n"
+            caption += "\n🌐 [Bản đồ trực quan NCHMF](https://luquetsatlo.nchmf.gov.vn)"
+            
+            broadcast_photo(img_bytes, caption)
+            save_sent_news(alert_id, title)
+            print(f"✅ Đã gửi Infographic cho {len(active_communes)} xã thành công!")
 
-            for item in features:
-                props = item.get("properties", item) if isinstance(item, dict) else {}
-                province = str(props.get("TenTinh") or props.get("Province") or props.get("PROVINCE") or "").strip()
-                district = str(props.get("TenHuyen") or props.get("District") or props.get("DISTRICT") or "").strip()
-                commune = str(props.get("TenXa") or props.get("Commune") or props.get("COMMUNE") or props.get("NAME") or "").strip()
-                
-                is_thanh_hoa = "thanh hóa" in province.lower() or "thanh hoá" in province.lower()
-                is_thuyen_thanh_hoa = any(d in district.lower() for d in thanh_hoa_districts)
-
-                if (is_thanh_hoa or is_thuyen_thanh_hoa) and commune:
-                    c_label = f"Xã {commune}" + (f" ({district})" if district else "")
-                    if c_label not in active_communes:
-                        active_communes.append(c_label)
-
-            if active_communes:
-                now_vn = (datetime.utcnow() + timedelta(hours=7)).strftime('%H:%M %d/%m/%Y')
-                alert_id = f"luquet_th_{len(active_communes)}_{datetime.now().strftime('%Y%m%d%H')}"
-                
-                if not is_news_sent(alert_id):
-                    title = f"CẢNH BÁO LŨ QUÉT & SẠT LỞ ĐẤT TẠI {len(active_communes)} XÃ THUỘC THANH HÓA"
-                    parsed_data = {
-                        "rainfall": "Cảnh báo nguy cơ trong 06h tới",
-                        "risk_level": "CẤP 1 - MỨC TRUNG BÌNH/CAO",
-                        "locations": active_communes,
-                        "summary": [f"Mô hình dự báo ghi nhận {len(active_communes)} xã tại Thanh Hóa có nguy cơ lũ quét và sạt lở đất."]
-                    }
-                    
-                    img_bytes = create_infographic("CẢNH BÁO LŨ QUÉT & SẠT LỞ CẤP XÃ", title, parsed_data, now_vn)
-                    
-                    caption = f"🚨 **CẢNH BÁO LŨ QUÉT & SẠT LỞ ĐẤT (CẤP XÃ)**\n"
-                    caption += f"🕒 *Thời gian cập nhật:* {now_vn}\n"
-                    caption += f"📍 **Số xã nguy cơ:** {len(active_communes)} xã\n\n"
-                    caption += "🔻 **DANH SÁCH CHI TIẾT CÁC XÃ:**\n"
-                    for idx, xa in enumerate(active_communes, 1):
-                        caption += f"  {idx}. {xa}\n"
-                    caption += "\n🌐 [Xem bản đồ trực quan NCHMF](https://luquetsatlo.nchmf.gov.vn)"
-                    
-                    broadcast_photo(img_bytes, caption)
-                    save_sent_news(alert_id, title)
-                    print(f"✅ Đã quét động & gửi cảnh báo lũ quét cho {len(active_communes)} xã!")
-    except Exception as e:
-        print(f"❌ Lỗi cào Lũ quét cấp xã: {e}")
-
+    return len(active_communes)
 # ==================== 4. ROUTES SERVER & CONTROLLER ====================
 @app.route('/')
 def home():
