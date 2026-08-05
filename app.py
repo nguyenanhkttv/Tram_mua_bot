@@ -329,7 +329,7 @@ def home():
     # 1. Chạy Dạng 1: Dông sét iWeather
     iweather_data = get_iweather_storm_warning()
     if iweather_data["has_warning"] and iweather_data["count"] != LAST_ALERT_COUNT:
-        msg = f"⚡ **CẢNH BÁO DỒNG SÉ TỰ ĐỘNG TẠI THANH HÓA!**\n"
+        msg = f"⚡ **CẢNH BÁO DÔNG SÉT TỰ ĐỘNG TẠI THANH HÓA!**\n"
         msg += f"🕒 *Thời gian:* {iweather_data['updated_at']}\n"
         msg += f"📍 **Số khu vực phát hiện:** {iweather_data['count']}\n"
         for idx, loc in enumerate(iweather_data['locations'], 1):
