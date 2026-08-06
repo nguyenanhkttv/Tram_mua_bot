@@ -413,7 +413,7 @@ def home():
 
     # 3. Chạy Dạng 3: Lũ quét NCHMF (Xử lý an toàn)
     try:
-        lu_quet_count, lu_quet_list = return len(active_communes), active_communes
+        return len(active_communes), active_communes
     except Exception as e:
         print(f"❌ Lỗi chạy Lũ quét: {e}")
         lu_quet_count, lu_quet_list = 0, []
