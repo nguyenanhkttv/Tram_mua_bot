@@ -320,30 +320,44 @@ def scrape_lu_quet_sat_lo_cap_xa():
     global LAST_ALERTED_COMMUNES
     active_communes = []
     
-    # Sử dụng Session để lưu giữ Cookie của ASP.NET
     session = requests.Session()
     
+    # Bộ Header giả lập trình duyệt Chrome Windows tối tân nhất
     headers = {
+        'Host': 'luquetsatlo.nchmf.gov.vn',
+        'Connection': 'keep-alive',
+        'Cache-Control': 'max-age=0',
+        'sec-ch-ua': '"Not/A)Brand";v="8", "Chromium";v="126", "Google Chrome";v="126"',
+        'sec-ch-ua-mobile': '?0',
+        'sec-ch-ua-platform': '"Windows"',
+        'Upgrade-Insecure-Requests': '1',
         'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36',
-        'Accept': 'application/json, text/javascript, */*; q=0.01',
-        'Accept-Language': 'vi-VN,vi;q=0.9,en-US;q=0.8',
-        'X-Requested-With': 'XMLHttpRequest', # Bắt buộc đối với ASP.NET AJAX
-        'Origin': 'https://luquetsatlo.nchmf.gov.vn',
-        'Referer': 'https://luquetsatlo.nchmf.gov.vn/Home',
-        'Content-Type': 'application/x-www-form-urlencoded; charset=UTF-8'
+        'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8',
+        'Accept-Encoding': 'gzip, deflate, br',
+        'Accept-Language': 'vi-VN,vi;q=0.9,en-US;q=0.8'
     }
 
     try:
-        # BƯỚC 1: "Gõ cửa" trang chủ để lấy Cookie phiên làm việc ASP.NET_SessionId
-        init_res = session.get('https://luquetsatlo.nchmf.gov.vn/Home', headers=headers, timeout=12, verify=False)
-        print(f"🔑 [ASP.NET Session] Status: {init_res.status_code} | Cookies: {session.cookies.get_dict()}")
+        # BƯỚC 1: Truy cập trang chủ chính thức để kích hoạt session trên IIS
+        home_res = session.get('https://luquetsatlo.nchmf.gov.vn/', headers=headers, timeout=15, verify=False)
+        print(f"🔑 [Trang chủ NCHMF] Status: {home_res.status_code} | Cookies nhận được: {dict(session.cookies)}")
 
-        # BƯỚC 2: Gửi POST kèm Cookie + Payload sogiodubao=6
+        # BƯỚC 2: Chuẩn bị header riêng cho AJAX POST
+        ajax_headers = headers.copy()
+        ajax_headers.update({
+            'Accept': 'application/json, text/javascript, */*; q=0.01',
+            'X-Requested-With': 'XMLHttpRequest',
+            'Origin': 'https://luquetsatlo.nchmf.gov.vn',
+            'Referer': 'https://luquetsatlo.nchmf.gov.vn/',
+            'Content-Type': 'application/x-www-form-urlencoded; charset=UTF-8'
+        })
+
         payload = {'sogiodubao': '6'}
         api_url = 'https://luquetsatlo.nchmf.gov.vn/Home/getDSCanhbaoSLLQ'
 
-        res = session.post(api_url, headers=headers, data=payload, timeout=12, verify=False)
-        print(f"🌐 [NCHMF Query] {api_url} | Status: {res.status_code} | Length: {len(res.text)}")
+        # Gửi request kèm session cookies đã lưu
+        res = session.post(api_url, headers=ajax_headers, data=payload, timeout=15, verify=False)
+        print(f"🌐 [API SLLQ] Status: {res.status_code} | Chiều dài dữ liệu: {len(res.text)}")
 
         if res.status_code == 200 and not res.text.startswith("<!DOCTYPE"):
             data = res.json()
@@ -353,11 +367,10 @@ def scrape_lu_quet_sat_lo_cap_xa():
                     if not isinstance(item, dict):
                         continue
 
-                    # Bóc tách dữ liệu theo đúng cấu trúc DevTools:
                     prov_ref = str(item.get("province_ref") or item.get("tinh_id") or "").strip()
                     prov_name = str(item.get("provinceName") or item.get("tentinh") or "").lower()
 
-                    # Lọc mã tỉnh 33 (Thanh Hóa)
+                    # Lọc mã tỉnh Thanh Hóa (33)
                     if prov_ref == "33" or "thanh hóa" in prov_name or "thanh hoá" in prov_name:
                         xa_name = item.get("commune_name") or item.get("commune_name_2cap") or item.get("ten_xa") or ""
                         huyen_name = item.get("district_name") or item.get("ten_huyen") or ""
@@ -372,12 +385,12 @@ def scrape_lu_quet_sat_lo_cap_xa():
                                 active_communes.append(label)
 
                 if len(active_communes) > 0:
-                    print(f"🎯 THÀNH CÔNG! Lấy được {len(active_communes)} xã tại Thanh Hóa!")
+                    print(f"🎯 THÀNH CÔNG RỰC RỠ! Đã quét được {len(active_communes)} xã tại Thanh Hóa.")
 
     except Exception as e:
-        print(f"⚠️ Lỗi truy vấn NCHMF: {e}")
+        print(f"⚠️ Lỗi kết nối NCHMF: {e}")
 
-    # BƯỚC 3: Phát Infographic & Bắn Telegram
+    # BƯỚC 3: Xử lý bắn Infographic về Telegram nếu có dữ liệu
     if len(active_communes) > 0:
         try:
             sorted_communes = sorted(active_communes)
