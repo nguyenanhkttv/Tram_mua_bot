@@ -314,79 +314,52 @@ def scrape_kttv_thanh_hoa(url, category_name):
         print(f"❌ Lỗi cào KTTV Thanh Hóa: {e}")
 
 # ==================== DẠNG 3: LŨ QUÉT - CHỐNG LỖI SCOPE BIẾN ====================
-LAST_ALERTED_COMMUNES = []
+LLAST_ALERTED_COMMUNES = []
+
+# Dán URL Worker Cloudflare của bạn vào đây
+CLOUDFLARE_WORKER_URL = "https://nchmf-proxy.nguyenanh-kttv.workers.dev/"
 
 def scrape_lu_quet_sat_lo_cap_xa():
     global LAST_ALERTED_COMMUNES
     active_communes = []
     
-    # Danh sách Proxy miễn phí hỗ trợ bypass Geoblock (Có thể xoay vòng)
-    # Nếu Render bị chặn IP trực tiếp, Request sẽ đi qua các Proxy này
-    proxy_list = [
-        None,  # Thử trực tiếp trước
-        {"http": "http://103.152.118.242:8181", "https": "http://103.152.118.242:8181"},
-        {"http": "http://103.77.241.18:80", "https": "http://103.77.241.18:80"},
-        {"http": "http://14.225.211.238:8080", "https": "http://14.225.211.238:8080"}
-    ]
+    try:
+        print(f"🌐 Gọi NCHMF qua Cầu Nối Cloudflare Worker...")
+        res = requests.get(CLOUDFLARE_WORKER_URL, timeout=10, verify=False)
+        print(f"🌐 [API Result] Status: {res.status_code} | Length: {len(res.text)}")
 
-    headers = {
-        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36',
-        'Accept': 'application/json, text/javascript, */*; q=0.01',
-        'Accept-Language': 'vi-VN,vi;q=0.9,en-US;q=0.8',
-        'X-Requested-With': 'XMLHttpRequest',
-        'Origin': 'https://luquetsatlo.nchmf.gov.vn',
-        'Referer': 'https://luquetsatlo.nchmf.gov.vn/Home',
-        'Content-Type': 'application/x-www-form-urlencoded; charset=UTF-8'
-    }
+        if res.status_code == 200 and not res.text.startswith("<!DOCTYPE"):
+            data = res.json()
 
-    payload = {'sogiodubao': '6'}
-    api_url = 'https://luquetsatlo.nchmf.gov.vn/Home/getDSCanhbaoSLLQ'
+            if isinstance(data, list) and len(data) > 0:
+                for item in data:
+                    if not isinstance(item, dict):
+                        continue
 
-    for proxy in proxy_list:
-        try:
-            session = requests.Session()
-            proxy_label = "TRỰC TIẾP" if not proxy else proxy['http']
-            print(f"🔄 Đang thử kết nối NCHMF qua IP: {proxy_label}")
+                    prov_ref = str(item.get("province_ref") or item.get("tinh_id") or "").strip()
+                    prov_name = str(item.get("provinceName") or item.get("tentinh") or "").lower()
 
-            # Thử gửi request lấy dữ liệu
-            res = session.post(api_url, headers=headers, data=payload, proxies=proxy, timeout=8, verify=False)
-            
-            print(f"🌐 [API Result] Status: {res.status_code} | Length: {len(res.text)}")
+                    # Lọc mã tỉnh Thanh Hóa (33)
+                    if prov_ref == "33" or "thanh hóa" in prov_name or "thanh hoá" in prov_name:
+                        xa_name = item.get("commune_name") or item.get("commune_name_2cap") or item.get("ten_xa") or ""
+                        huyen_name = item.get("district_name") or item.get("ten_huyen") or ""
 
-            # Kiểm tra nếu nhận được dữ liệu JSON chuẩn (không phải trang HTML 404)
-            if res.status_code == 200 and not res.text.startswith("<!DOCTYPE") and len(res.text) > 100:
-                data = res.json()
+                        if xa_name:
+                            xa_clean = xa_name.strip()
+                            if not xa_clean.lower().startswith("xã "):
+                                xa_clean = f"Xã {xa_clean}"
+                            
+                            label = f"{xa_clean} ({huyen_name})" if huyen_name else xa_clean
+                            if label not in active_communes:
+                                active_communes.append(label)
 
-                if isinstance(data, list) and len(data) > 0:
-                    for item in data:
-                        if not isinstance(item, dict):
-                            continue
+                if len(active_communes) > 0:
+                    print(f"🎯 THÀNH CÔNG RỰC RỠ! Đã quét được {len(active_communes)} xã tại Thanh Hóa!")
 
-                        # Bóc tách dữ liệu chuẩn theo DevTools
-                        prov_ref = str(item.get("province_ref") or item.get("tinh_id") or "").strip()
-                        prov_name = str(item.get("provinceName") or item.get("tentinh") or "").lower()
+    except Exception as e:
+        print(f"⚠️ Lỗi kết nối qua Worker: {e}")
 
-                        # Lọc đúng tỉnh Thanh Hóa (Mã 33)
-                        if prov_ref == "33" or "thanh hóa" in prov_name or "thanh hoá" in prov_name:
-                            xa_name = item.get("commune_name") or item.get("commune_name_2cap") or item.get("ten_xa") or ""
-                            huyen_name = item.get("district_name") or item.get("ten_huyen") or ""
-
-                            if xa_name:
-                                xa_clean = xa_name.strip()
-                                if not xa_clean.lower().startswith("xã "):
-                                    xa_clean = f"Xã {xa_clean}"
-                                
-                                label = f"{xa_clean} ({huyen_name})" if huyen_name else xa_clean
-                                if label not in active_communes:
-                                    active_communes.append(label)
-
-                    if len(active_communes) > 0:
-                        print(f"🎯 THÀNH CÔNG RỰC RỠ! Đã lấy được {len(active_communes)} xã tại Thanh Hóa!")
-                        break # Đã lấy thành công thì thoát vòng lặp proxy
-        except Exception as e:
-            print(f"⚠️ Proxy {proxy_label} thất bại: {e}")
-
-    # BƯỚC XỬ LÝ PHÁT INFOGRAPHIC & TELEGRAM
+    # BƯỚC PHÁT INFOGRAPHIC VỀ TELEGRAM
     if len(active_communes) > 0:
         try:
             sorted_communes = sorted(active_communes)
