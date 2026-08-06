@@ -309,58 +309,70 @@ def scrape_kttv_thanh_hoa(url, category_name):
     except Exception as e:
         print(f"❌ Lỗi cào KTTV Thanh Hóa: {e}")
 
-# ==================== DẠNG 3: LŨ QUÉT SẠT LỞ GIỜ TRÒN (NCHMF) ====================
+# ==================== DẠNG 3: LŨ QUÉT SẠT LỞ CẤP XÃ (NCHMF) ====================
 def scrape_lu_quet_sat_lo_cap_xa():
     headers = {
         'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)',
         'Referer': 'https://luquetsatlo.nchmf.gov.vn/'
     }
     
+    # 📌 KHAI BÁO BIẾN (Đã bổ sung biến khởi tạo)
     active_communes = []
-    thanh_hoa_keywords = [
-        "mường lát", "quan sơn", "quan hóa", "bá thước", "lang chánh", 
-        "thường xuân", "ngọc lặc", "như xuân", "như thanh", "cẩm thủy", 
-        "thạch thành", "thanh hóa", "thanh hoá"
+    
+    api_configs = [
+        ("https://luquetsatlo.nchmf.gov.vn/Home/getDSCanhbaoSLLQ", "GET"),
+        ("https://luquetsatlo.nchmf.gov.vn/Home/getDSCanhbaoSLLQ", "POST"),
+        ("https://luquetsatlo.nchmf.gov.vn/Home/getThongTinXaCBTheoVungVe", "POST"),
+        ("https://luquetsatlo.nchmf.gov.vn/Home/InitTrongDiemTheoSLLQ", "POST")
     ]
 
-    for api_url in URL_LU_QUET_APIS:
+    for api_url, method in api_configs:
         try:
-            res = requests.post(api_url, headers=headers, timeout=10)
+            res = requests.get(api_url, headers=headers, timeout=10) if method == "GET" else requests.post(api_url, headers=headers, timeout=10)
+
             if res.status_code == 200:
                 data = res.json()
                 items = data if isinstance(data, list) else data.get("features", data.get("data", []))
                 
-                if not isinstance(items, list):
+                if not isinstance(items, list) or len(items) == 0:
                     continue
 
                 for item in items:
                     props = item.get("properties", item) if isinstance(item, dict) else {}
                     
-                    commune = str(props.get("commune_name_2cap") or props.get("xaname_2cap") or props.get("ten_xa") or props.get("TenXa") or props.get("xa") or "").strip()
-                    province = str(props.get("tentinh") or props.get("ten_tinh") or props.get("TenTinh") or "").strip()
-                    tinh_id = str(props.get("tinh_id") or "")
+                    tinh_id = str(props.get("tinh_id") or props.get("id_tinh") or props.get("province_id") or props.get("matinh") or "").strip()
+                    province_name = str(props.get("tentinh") or props.get("ten_tinh") or props.get("TenTinh") or "").lower()
 
-                    commune_clean = commune[3:].strip() if commune.lower().startswith("xã ") else commune
-                    full_str = f"{commune} {province}".lower()
-                    is_thanh_hoa = (tinh_id == "33") or any(kw in full_str for kw in thanh_hoa_keywords)
+                    # Lọc chuẩn theo ID tỉnh 33 (Thanh Hóa)
+                    is_thanh_hoa = (tinh_id == "33") or ("thanh hóa" in province_name or "thanh hoá" in province_name)
 
-                    if commune_clean and is_thanh_hoa:
-                        label = f"Xã {commune_clean}"
-                        if label not in active_communes:
-                            active_communes.append(label)
-                
+                    if is_thanh_hoa:
+                        commune = str(
+                            props.get("commune_name_2cap") or 
+                            props.get("xaname_2cap") or 
+                            props.get("ten_xa") or 
+                            props.get("TenXa") or 
+                            props.get("xa") or ""
+                        ).strip()
+
+                        if commune:
+                            commune_clean = commune[3:].strip() if commune.lower().startswith("xã ") else commune
+                            label = f"Xã {commune_clean}"
+                            
+                            if label not in active_communes:
+                                active_communes.append(label)
+
                 if active_communes:
                     break
         except Exception as e:
-            print(f"⚠️ Lỗi thử API NCHMF ({api_url}): {e}")
+            print(f"⚠️ Lỗi kết nối API NCHMF ({api_url}): {e}")
 
+    # Phát Infographic & Thông báo Telegram
     if active_communes:
-        # Chuẩn hóa múi giờ Việt Nam (UTC+7)
         now_vn_dt = datetime.utcnow() + timedelta(hours=7)
         now_vn_str = now_vn_dt.strftime('%H:00 %d/%m/%Y')
         hour_stamp = now_vn_dt.strftime('%Y%m%d%H')
         
-        # Khóa giờ tròn: luquet_th_số_xã_YYYYMMDDHH
         alert_id = f"luquet_th_{len(active_communes)}_{hour_stamp}"
         
         if not is_news_sent(alert_id):
@@ -369,7 +381,7 @@ def scrape_lu_quet_sat_lo_cap_xa():
                 "rainfall": "Nguy cơ cao trong 06h tới",
                 "risk_level": "CẤP 1 - TRUNG BÌNH / CAO",
                 "locations": active_communes,
-                "summary": [f"Mô hình NCHMF ghi nhận {len(active_communes)} xã/phường Thanh Hóa có nguy cơ lũ quét, sạt lở."]
+                "summary": [f"NCHMF ghi nhận {len(active_communes)} xã/phường tại Thanh Hóa nằm trong vùng nguy cơ."]
             }
             
             img_bytes = create_infographic("BẢN TIN LŨ QUÉT & SẠT LỞ CẤP XÃ", title, parsed_data, now_vn_str)
@@ -377,16 +389,16 @@ def scrape_lu_quet_sat_lo_cap_xa():
             caption = f"🚨 **BẢN TIN CẢNH BÁO LŨ QUÉT & SẠT LỞ ĐẤT**\n"
             caption += f"🕒 *Mốc cập nhật:* **{now_vn_str}**\n"
             caption += f"📍 **Tổng số địa bàn nguy cơ:** {len(active_communes)} xã\n\n"
-            caption += "🔻 **DANH SÁCH CHI TIẾT:**\n"
+            caption += "🔻 **DANH SÁCH XÃ BIẾN ĐỘNG TRONG GIỜ:**\n"
             for idx, xa in enumerate(active_communes, 1):
                 caption += f"  {idx}. {xa}\n"
             caption += "\n🌐 [Xem bản đồ trực quan NCHMF](https://luquetsatlo.nchmf.gov.vn)"
             
             broadcast_photo(img_bytes, caption)
             save_sent_news(alert_id, title)
-            print(f"✅ [GIỜ TRÒN {now_vn_dt.strftime('%H:00')}] Đã phát cảnh báo Lũ quét cho {len(active_communes)} xã thành công!")
+            print(f"✅ [MỐC {now_vn_str}] Phát thành công cảnh báo Lũ quét cho {len(active_communes)} xã!")
 
-    return len(active_communes)
+    return len(active_communes), active_communes
 
 # ==================== 4. ROUTES SERVER & CONTROLLER ====================
 @app.route('/')
