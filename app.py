@@ -16,6 +16,7 @@ IWEATHER_STORM_URL = "https://iweather.gov.vn/product/warningstorm?token=null"
 URL_THOI_TIET = "http://kttv.thanhhoa.gov.vn/tin-tuc/thoi-tiet-nguy-hiem/43"
 URL_THUY_VAN = "http://kttv.thanhhoa.gov.vn/tin-tuc/thuy-van-dac-biet/46"
 URL_LU_QUET_APIS = [
+    "https://luquetsatlo.nchmf.gov.vn/Home/getDSCanhbaoSLLQ",
     "https://luquetsatlo.nchmf.gov.vn/Home/getThongTinXaCBTheoVungVe",
     "https://luquetsatlo.nchmf.gov.vn/Home/InitTrongDiemTheoSLLQ",
     "https://luquetsatlo.nchmf.gov.vn/Home/getThongTinXaCB"
@@ -335,7 +336,7 @@ def scrape_lu_quet_sat_lo_cap_xa():
                 for item in items:
                     props = item.get("properties", item) if isinstance(item, dict) else {}
                     
-                    commune = str(props.get("xaname_2cap") or props.get("ten_xa") or props.get("TenXa") or props.get("xa") or "").strip()
+                    commune = str(props.get("commune_name_2cap") or (props.get("xaname_2cap") or props.get("ten_xa") or props.get("TenXa") or props.get("xa") or "").strip()
                     province = str(props.get("tentinh") or props.get("ten_tinh") or props.get("TenTinh") or "").strip()
                     tinh_id = str(props.get("tinh_id") or "")
 
