@@ -12,19 +12,21 @@ from flask import Flask, request, jsonify
 TELEGRAM_BOT_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN", "8587075816:AAHlm9r7mwCjEQlgmx6Klgmx6KjoZ8AE7Vd844x6s")
 TELEGRAM_API_URL = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}"
 
-# 3 Nguồn Dữ Liệu Cảnh Báo
 IWEATHER_STORM_URL = "https://iweather.gov.vn/product/warningstorm?token=null"
 URL_THOI_TIET = "http://kttv.thanhhoa.gov.vn/tin-tuc/thoi-tiet-nguy-hiem/43"
 URL_THUY_VAN = "http://kttv.thanhhoa.gov.vn/tin-tuc/thuy-van-dac-biet/46"
-URL_LU_QUET_API = "https://luquetsatlo.nchmf.gov.vn/Home/InitTrongDiemTheoSLLQ"
+URL_LU_QUET_APIS = [
+    "https://luquetsatlo.nchmf.gov.vn/Home/getThongTinXaCBTheoVungVe",
+    "https://luquetsatlo.nchmf.gov.vn/Home/InitTrongDiemTheoSLLQ",
+    "https://luquetsatlo.nchmf.gov.vn/Home/getThongTinXaCB"
+]
 
 app = Flask(__name__)
-REGISTERED_CHATS = set()
 LAST_ALERT_COUNT = 0
 
-# ==================== 1. DATABASE (SỬA TRIỆT ĐỂ LỖI RENDER) ====================
+# ==================== 1. DATABASE LƯU TRỮ VĨNH CỬU ====================
 def init_db():
-    """Tự động khởi tạo bảng SQLite ngay khi ứng dụng nạp"""
+    """Khởi tạo SQLite lưu vĩnh cữu Tin đã gửi & Danh sách Chat ID đăng ký"""
     conn = sqlite3.connect('alerts.db')
     cursor = conn.cursor()
     cursor.execute('''
@@ -34,14 +36,17 @@ def init_db():
             sent_at TEXT
         )
     ''')
+    cursor.execute('''
+        CREATE TABLE IF NOT EXISTS registered_chats (
+            chat_id INTEGER PRIMARY KEY
+        )
+    ''')
     conn.commit()
     conn.close()
 
-# CHẠY NGAY TẠI CẤP MODULE -> Đảm bảo Gunicorn/Render không bị thiếu table
 init_db()
 
 def is_news_sent(url):
-    init_db() # Kiểm tra an toàn trước mỗi truy vấn
     conn = sqlite3.connect('alerts.db')
     cursor = conn.cursor()
     cursor.execute('SELECT 1 FROM sent_news WHERE url = ?', (url,))
@@ -50,13 +55,28 @@ def is_news_sent(url):
     return row is not None
 
 def save_sent_news(url, title):
-    init_db()
     conn = sqlite3.connect('alerts.db')
     cursor = conn.cursor()
-    now_str = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+    now_vn = datetime.utcnow() + timedelta(hours=7)
+    now_str = now_vn.strftime('%Y-%m-%d %H:%M:%S')
     cursor.execute('INSERT OR IGNORE INTO sent_news (url, title, sent_at) VALUES (?, ?, ?)', (url, title, now_str))
     conn.commit()
     conn.close()
+
+def add_registered_chat(chat_id):
+    conn = sqlite3.connect('alerts.db')
+    cursor = conn.cursor()
+    cursor.execute('INSERT OR IGNORE INTO registered_chats (chat_id) VALUES (?)', (chat_id,))
+    conn.commit()
+    conn.close()
+
+def get_registered_chats():
+    conn = sqlite3.connect('alerts.db')
+    cursor = conn.cursor()
+    cursor.execute('SELECT chat_id FROM registered_chats')
+    rows = cursor.fetchall()
+    conn.close()
+    return [r[0] for r in rows]
 
 # ==================== 2. HÀM GỬI THÔNG BÁO TELEGRAM ====================
 def send_telegram_message(chat_id, text):
@@ -67,50 +87,51 @@ def send_telegram_message(chat_id, text):
 
 def send_telegram_photo(chat_id, image_bytes, caption):
     try:
-        files = {'photo': ('infographic.png', image_bytes, 'image/png')}
+        image_bytes.seek(0)
+        files = {'photo': ('infographic.png', image_bytes.read(), 'image/png')}
         payload = {'chat_id': chat_id, 'caption': caption, 'parse_mode': 'Markdown'}
         requests.post(f"{TELEGRAM_API_URL}/sendPhoto", data=payload, files=files, timeout=15)
     except Exception as e:
         print(f"❌ Lỗi gửi ảnh Telegram: {e}")
 
 def broadcast_message(text):
-    for chat_id in REGISTERED_CHATS:
+    chats = get_registered_chats()
+    for chat_id in chats:
         send_telegram_message(chat_id, text)
 
 def broadcast_photo(image_bytes, caption):
-    for chat_id in REGISTERED_CHATS:
-        image_bytes.seek(0)
+    chats = get_registered_chats()
+    for chat_id in chats:
         send_telegram_photo(chat_id, image_bytes, caption)
 
-# ==================== 3. ENGINE VẼ INFOGRAPHIC ĐỘNG NÂNG CAO ====================
+# ==================== 3. ENGINE VẼ INFOGRAPHIC CHỐNG LỖI RỖNG ====================
 def create_infographic(category_title, article_title, parsed_data, date_str):
     width = 900
     locations = parsed_data.get('locations', [])
     summary = parsed_data.get('summary', [])
     
-    # Dynamic Height Adjustment: Tự co giãn theo lượng địa bàn & tóm tắt
-    loc_rows = (len(locations) + 2) // 3
-    added_height = (loc_rows * 38) + (len(summary) * 28)
-    height = max(580, 420 + added_height)
+    # Co giãn chiều cao tự động
+    loc_rows = (len(locations) + 1) // 2
+    added_height = (loc_rows * 36) + (len(summary) * 28)
+    height = max(580, 400 + added_height)
 
     image = Image.new('RGB', (width, height), color='#0f172a')
     draw = ImageDraw.Draw(image)
 
-    # Phối màu viền theo dạng cảnh báo
+    # Viền theo loại cảnh báo
     if "LŨ QUÉT" in category_title.upper() or "SẠT LỞ" in category_title.upper():
-        border_color = '#f59e0b' # Cam hổ phách
-    elif "THỜI TIẾT" in category_title.upper() or "DỒNG SÉ" in category_title.upper():
-        border_color = '#ef4444' # Đỏ
+        border_color = '#f59e0b'
+    elif "THỜI TIẾT" in category_title.upper() or "DÔNG SÉT" in category_title.upper():
+        border_color = '#ef4444'
     else:
-        border_color = '#0284c7' # Xanh biển
+        border_color = '#0284c7'
 
-    # Viền ngoài & Header Banner
     draw.rectangle([15, 15, width-15, height-15], outline=border_color, width=4)
     draw.rectangle([15, 15, width-15, 90], fill=border_color)
     
-    # Load Font hệ thống
+    # Font hệ thống
     font_header = font_title = font_bold = font_sub = None
-    font_paths = ["arialbd.ttf", "arial.ttf", "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf"]
+    font_paths = ["Roboto-Bold.ttf", "arialbd.ttf", "arial.ttf", "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf"]
     for path in font_paths:
         try:
             font_header = ImageFont.truetype(path, 22)
@@ -123,11 +144,11 @@ def create_infographic(category_title, article_title, parsed_data, date_str):
     if not font_header:
         font_header = font_title = font_bold = font_sub = ImageFont.load_default()
 
-    # Header Title
+    # Title Banner
     draw.text((30, 32), f"🚨 CẢNH BÁO TỰ ĐỘNG: {category_title.upper()}", fill='#ffffff', font=font_header)
     draw.text((width - 240, 38), f"🕒 {date_str}", fill='#ffffff', font=font_sub)
 
-    # Wrap Tiêu Đề Bài Viết
+    # Tiêu đề bài viết
     draw.text((30, 110), "NỘI DUNG CẢNH BÁO / DỰ BÁO:", fill='#38bdf8', font=font_sub)
     words = article_title.split()
     lines, current_line = [], ""
@@ -145,7 +166,7 @@ def create_infographic(category_title, article_title, parsed_data, date_str):
         draw.text((30, y_pos), line, fill='#ffffff', font=font_title)
         y_pos += 26
 
-    # 2 Box Chỉ Số Metrics Cards
+    # Box thông số
     y_pos += 12
     draw.rectangle([30, y_pos, 430, y_pos+65], fill='#1e293b', outline='#334155', width=2)
     draw.text((45, y_pos+10), "🌧️ THÔNG SỐ CẢNH BÁO", fill='#94a3b8', font=font_sub)
@@ -155,41 +176,41 @@ def create_infographic(category_title, article_title, parsed_data, date_str):
     draw.text((465, y_pos+10), "⚠️ CẤP ĐỘ RỦI RO THIÊN TAI", fill='#94a3b8', font=font_sub)
     draw.text((465, y_pos+32), parsed_data.get('risk_level', 'CẤP 1'), fill='#f43f5e', font=font_bold)
 
-    # Danh sách thẻ địa bàn Badges (Tự sắp xếp dòng)
+    # Danh sách địa bàn
     y_pos += 85
     if locations:
-        draw.text((30, y_pos), "📍 CÁC KHU VỰC / XÃ / PHƯỜNG CÓ NGUY CƠ CAO:", fill='#f59e0b', font=font_sub)
+        draw.text((30, y_pos), "📍 CÁC KHU VỰC / XÃ / PHƯỜNG NGUY CƠ CAO:", fill='#f59e0b', font=font_sub)
         y_pos += 25
         x_start, x_curr = 30, 30
         for loc in locations:
-            badge_text = f"📍 {loc}"
-            box_width = len(badge_text) * 10 + 20
+            badge_text = f"• {loc}"
+            box_width = len(badge_text) * 9 + 20
             if x_curr + box_width > width - 40:
                 x_curr = x_start
-                y_pos += 36
-            draw.rectangle([x_curr, y_pos, x_curr + box_width, y_pos + 28], fill='#334155', outline='#475569')
-            draw.text((x_curr + 8, y_pos + 5), badge_text, fill='#e2e8f0', font=font_sub)
+                y_pos += 34
+            draw.rectangle([x_curr, y_pos, x_curr + box_width, y_pos + 26], fill='#334155', outline='#475569')
+            draw.text((x_curr + 8, y_pos + 4), badge_text, fill='#e2e8f0', font=font_sub)
             x_curr += box_width + 10
         y_pos += 40
 
-    # Tóm tắt diễn biến
+    # Tóm tắt
     if summary:
-        draw.text((30, y_pos), "📝 TÓM TẮT DIỄN BIẾN:", fill='#38bdf8', font=font_sub)
+        draw.text((30, y_pos), "📝 CHI TIẾT DỰ BÁO / HƯỚNG DẪN:", fill='#38bdf8', font=font_sub)
         y_pos += 25
-        for s_line in summary[:3]:
-            draw.text((40, y_pos), f"• {s_line[:85]}...", fill='#cbd5e1', font=font_sub)
+        for s_line in summary[:4]:
+            draw.text((40, y_pos), f"• {s_line}", fill='#cbd5e1', font=font_sub)
             y_pos += 24
 
     # Footer
     draw.line([(30, height - 40), (width - 30, height - 40)], fill='#334155', width=1)
-    draw.text((30, height - 30), "🌐 Trích xuất dữ liệu & thiết kế Infographic tự động", fill='#64748b', font=font_sub)
+    draw.text((30, height - 30), "🌐 Trích xuất dữ liệu & thiết kế Infographic tự động 24/7", fill='#64748b', font=font_sub)
 
     img_byte_arr = io.BytesIO()
     image.save(img_byte_arr, format='PNG')
     img_byte_arr.seek(0)
     return img_byte_arr
 
-# ==================== DẠNG 1: DÔNG SÉT TỰ ĐỘNG (IWEATHER) ====================
+# ==================== DẠNG 1: DÔNG SÉT (IWEATHER) ====================
 def get_iweather_storm_warning():
     headers = {'User-Agent': 'Mozilla/5.0'}
     now_vn = datetime.utcnow() + timedelta(hours=7)
@@ -211,7 +232,7 @@ def get_iweather_storm_warning():
         print(f"❌ Lỗi iWeather: {e}")
     return {"has_warning": False, "count": 0, "locations": []}
 
-# ==================== DẠNG 2: WEB ĐÀI KTTV THANH HÓA ====================
+# ==================== DẠNG 2: KTTV THANH HÓA (ĐÃ BẮT LỖI ẢNH SCAN) ====================
 def scrape_kttv_thanh_hoa(url, category_name):
     headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)'}
     try:
@@ -234,24 +255,48 @@ def scrape_kttv_thanh_hoa(url, category_name):
                 if not is_news_sent(full_link):
                     now_vn = (datetime.utcnow() + timedelta(hours=7)).strftime('%H:%M %d/%m/%Y')
                     
-                    # Bóc tách nội dung bài viết
+                    # BÓC TÁCH BÀI VIẾT BẰNG BEAUTIFULSOUP (BẮT BÀI DẠNG ẢNH SCAN)
                     detail_res = requests.get(full_link, headers=headers, timeout=10)
-                    full_text = detail_res.text if detail_res.status_code == 200 else ""
+                    detail_res.encoding = 'utf-8'
+                    detail_soup = BeautifulSoup(detail_res.text, 'html.parser') if detail_res.status_code == 200 else None
                     
-                    rain_match = re.search(r'(\d+\s*[-–]\s*\d+\s*mm|\d+\s*mm)', full_text, re.IGNORECASE)
-                    rainfall = rain_match.group(1) if rain_match else "Có mưa vừa đến mưa to"
+                    full_text = ""
+                    has_images = False
                     
-                    # Trích xuất địa bàn có trong bài
-                    districts = ["Mường Lát", "Quan Sơn", "Quan Hóa", "Bá Thước", "Lang Chánh", "Thường Xuân", "Ngọc Lặc", "Như Xuân", "Cẩm Thủy", "Thạch Thành"]
-                    found_locs = [d for d in districts if re.search(r'\b' + re.escape(d) + r'\b', full_text, re.IGNORECASE)]
-                    if not found_locs:
-                        found_locs = ["Toàn tỉnh Thanh Hóa"]
+                    if detail_soup:
+                        content_div = detail_soup.find('div', class_='detail-content') or detail_soup.find('div', class_='content') or detail_soup.body
+                        if content_div:
+                            full_text = content_div.get_text(strip=True)
+                            has_images = len(content_div.find_all('img')) > 0
+                    
+                    # KIỂM TRA BẢN TIN DẠNG ẢNH SCAN
+                    is_image_bulletin = (len(full_text) < 40) or (has_images and len(full_text) < 100)
+                    
+                    if is_image_bulletin:
+                        rainfall = "Dạng FILE ẢNH SCAN"
+                        found_locs = ["⚠️ VĂN BẢN ĐỒ HỌA / SCAN", "👉 Nhấn 'Xem bản tin gốc' để đọc"]
+                        summary = [
+                            "Đài KTTV phát hành bài viết dưới dạng FILE ẢNH SCAN.",
+                            "Mời bấm link 'Xem bản tin gốc' bên dưới Telegram để mở ảnh trực tiếp."
+                        ]
+                    else:
+                        rain_match = re.search(r'(\d+\s*[-–]\s*\d+\s*mm|\d+\s*mm)', full_text, re.IGNORECASE)
+                        rainfall = rain_match.group(1) if rain_match else "Có mưa vừa đến mưa to"
+                        
+                        districts = ["Mường Lát", "Quan Sơn", "Quan Hóa", "Bá Thước", "Lang Chánh", "Thường Xuân", "Ngọc Lặc", "Như Xuân", "Cẩm Thủy", "Thạch Thành"]
+                        found_locs = [d for d in districts if re.search(r'\b' + re.escape(d) + r'\b', full_text, re.IGNORECASE)]
+                        if not found_locs:
+                            found_locs = ["Toàn tỉnh Thanh Hóa"]
+                            
+                        # Cắt tóm tắt 2-3 câu ngắn gọn
+                        clean_lines = [p.get_text(strip=True) for p in detail_soup.find_all('p') if len(p.get_text(strip=True)) > 20]
+                        summary = clean_lines[:3] if clean_lines else [title]
 
                     parsed_data = {
                         "rainfall": rainfall,
-                        "risk_level": "CẤP 1",
+                        "risk_level": "CẤP ĐỘ CẢNH BÁO",
                         "locations": found_locs,
-                        "summary": [title]
+                        "summary": summary
                     }
                     
                     img_bytes = create_infographic(category_name, title, parsed_data, now_vn)
@@ -263,13 +308,7 @@ def scrape_kttv_thanh_hoa(url, category_name):
     except Exception as e:
         print(f"❌ Lỗi cào KTTV Thanh Hóa: {e}")
 
-# ==================== DẠNG 3: WEB LŨ QUÉT SẠT LỞ CẤP XÃ (NCHMF) ====================
-URL_LU_QUET_APIS = [
-    "https://luquetsatlo.nchmf.gov.vn/Home/getThongTinXaCBTheoVungVe",
-    "https://luquetsatlo.nchmf.gov.vn/Home/InitTrongDiemTheoSLLQ",
-    "https://luquetsatlo.nchmf.gov.vn/Home/getThongTinXaCB"
-]
-
+# ==================== DẠNG 3: LŨ QUÉT SẠT LỞ GIỜ TRÒN (NCHMF) ====================
 def scrape_lu_quet_sat_lo_cap_xa():
     headers = {
         'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)',
@@ -277,7 +316,6 @@ def scrape_lu_quet_sat_lo_cap_xa():
     }
     
     active_communes = []
-    # Danh sách các huyện/thành miền núi Thanh Hóa để nhận diện chính xác
     thanh_hoa_keywords = [
         "mường lát", "quan sơn", "quan hóa", "bá thước", "lang chánh", 
         "thường xuân", "ngọc lặc", "như xuân", "như thanh", "cẩm thủy", 
@@ -295,67 +333,60 @@ def scrape_lu_quet_sat_lo_cap_xa():
                     continue
 
                 for item in items:
-                    # Bóc tách theo đúng các Field phát hiện trong DevTools Preview
                     props = item.get("properties", item) if isinstance(item, dict) else {}
                     
-                    # Tên xã từ JSON: xaname_2cap, ten_xa, TenXa, xa
                     commune = str(props.get("xaname_2cap") or props.get("ten_xa") or props.get("TenXa") or props.get("xa") or "").strip()
-                    # Tên tỉnh/huyện từ JSON
                     province = str(props.get("tentinh") or props.get("ten_tinh") or props.get("TenTinh") or "").strip()
                     tinh_id = str(props.get("tinh_id") or "")
 
-                    # Bỏ chuỗi thừa "Xã " nếu bị lặp
-                    if commune.lower().startswith("xã "):
-                        commune_clean = commune[3:].strip()
-                    else:
-                        commune_clean = commune
-
-                    # Đánh giá xem xã có thuộc Thanh Hóa hay không (Dựa vào tinh_id==33 hoặc chứa từ khóa)
+                    commune_clean = commune[3:].strip() if commune.lower().startswith("xã ") else commune
                     full_str = f"{commune} {province}".lower()
                     is_thanh_hoa = (tinh_id == "33") or any(kw in full_str for kw in thanh_hoa_keywords)
 
-                    # Lưu danh sách xã
                     if commune_clean and is_thanh_hoa:
                         label = f"Xã {commune_clean}"
                         if label not in active_communes:
                             active_communes.append(label)
                 
                 if active_communes:
-                    break # Đã lấy được dữ liệu thành công
+                    break
         except Exception as e:
             print(f"⚠️ Lỗi thử API NCHMF ({api_url}): {e}")
 
-    # Tiến hành phát Infographic & Thông báo Telegram
     if active_communes:
-        now_vn = (datetime.utcnow() + timedelta(hours=7)).strftime('%H:%M %d/%m/%Y')
-        alert_id = f"luquet_th_{len(active_communes)}_{datetime.now().strftime('%Y%m%d%H')}"
+        # Chuẩn hóa múi giờ Việt Nam (UTC+7)
+        now_vn_dt = datetime.utcnow() + timedelta(hours=7)
+        now_vn_str = now_vn_dt.strftime('%H:00 %d/%m/%Y')
+        hour_stamp = now_vn_dt.strftime('%Y%m%d%H')
+        
+        # Khóa giờ tròn: luquet_th_số_xã_YYYYMMDDHH
+        alert_id = f"luquet_th_{len(active_communes)}_{hour_stamp}"
         
         if not is_news_sent(alert_id):
-            title = f"CẢNH BÁO LŨ QUÉT & SẠT LỞ ĐẤT TẠI {len(active_communes)} XÃ THUỘC THANH HÓA"
+            title = f"CẢNH BÁO LŨ QUÉT & SẠT LỞ ĐẤT TẠI {len(active_communes)} XÃ (CẬP NHẬT {now_vn_str})"
             parsed_data = {
                 "rainfall": "Nguy cơ cao trong 06h tới",
                 "risk_level": "CẤP 1 - TRUNG BÌNH / CAO",
                 "locations": active_communes,
-                "summary": [f"Mô hình NCHMF phát hiện {len(active_communes)} xã/phường có nguy cơ lũ quét, sạt lở đất."]
+                "summary": [f"Mô hình NCHMF ghi nhận {len(active_communes)} xã/phường Thanh Hóa có nguy cơ lũ quét, sạt lở."]
             }
             
-            # Tạo Infographic động
-            img_bytes = create_infographic("CẢNH BÁO LŨ QUÉT & SẠT LỞ CẤP XÃ", title, parsed_data, now_vn)
+            img_bytes = create_infographic("BẢN TIN LŨ QUÉT & SẠT LỞ CẤP XÃ", title, parsed_data, now_vn_str)
             
-            # Soạn caption Telegram
-            caption = f"🚨 **CẢNH BÁO LŨ QUÉT & SẠT LỞ ĐẤT (CẤP XÃ)**\n"
-            caption += f"🕒 *Thời gian:* {now_vn}\n"
+            caption = f"🚨 **BẢN TIN CẢNH BÁO LŨ QUÉT & SẠT LỞ ĐẤT**\n"
+            caption += f"🕒 *Mốc cập nhật:* **{now_vn_str}**\n"
             caption += f"📍 **Tổng số địa bàn nguy cơ:** {len(active_communes)} xã\n\n"
             caption += "🔻 **DANH SÁCH CHI TIẾT:**\n"
             for idx, xa in enumerate(active_communes, 1):
                 caption += f"  {idx}. {xa}\n"
-            caption += "\n🌐 [Bản đồ trực quan NCHMF](https://luquetsatlo.nchmf.gov.vn)"
+            caption += "\n🌐 [Xem bản đồ trực quan NCHMF](https://luquetsatlo.nchmf.gov.vn)"
             
             broadcast_photo(img_bytes, caption)
             save_sent_news(alert_id, title)
-            print(f"✅ Đã gửi Infographic cho {len(active_communes)} xã thành công!")
+            print(f"✅ [GIỜ TRÒN {now_vn_dt.strftime('%H:00')}] Đã phát cảnh báo Lũ quét cho {len(active_communes)} xã thành công!")
 
     return len(active_communes)
+
 # ==================== 4. ROUTES SERVER & CONTROLLER ====================
 @app.route('/')
 def home():
@@ -375,28 +406,34 @@ def home():
     elif not iweather_data["has_warning"]:
         LAST_ALERT_COUNT = 0
 
-    # 2. Chạy Dạng 2: Web Đài KTTV Thanh Hóa (Thời tiết & Thủy văn)
+    # 2. Chạy Dạng 2: Web Đài KTTV Thanh Hóa
     scrape_kttv_thanh_hoa(URL_THOI_TIET, "Thời Tiết Nguy Hiểm")
     scrape_kttv_thanh_hoa(URL_THUY_VAN, "Thủy Văn Đặc Biệt")
 
-    # 3. Chạy Dạng 3: Web Lũ Quét Sạt Lở Cấp Xã (NCHMF)
+    # 3. Chạy Dạng 3: Web Lũ Quét Sạt Lở (Giờ tròn NCHMF)
     scrape_lu_quet_sat_lo_cap_xa()
 
+    now_vn_str = (datetime.utcnow() + timedelta(hours=7)).strftime('%Y-%m-%d %H:%M:%S')
     return jsonify({
         "status": "system_running",
-        "registered_chats": list(REGISTERED_CHATS),
-        "iweather_alert_count": LAST_ALERT_COUNT
+        "time_vn": now_vn_str,
+        "registered_chats_count": len(get_registered_chats()),
+        "registered_chats": get_registered_chats()
     })
 
 @app.route(f'/{TELEGRAM_BOT_TOKEN}', methods=['POST'])
+@app.route('/webhook', methods=['POST'])
 def telegram_webhook():
     update = request.get_json()
     if update and "message" in update:
         chat_id = update["message"]["chat"]["id"]
         text = update["message"].get("text", "")
-        REGISTERED_CHATS.add(chat_id)
+        
+        # Tự động lưu Chat ID vào Database SQLite
+        add_registered_chat(chat_id)
+        
         if text.startswith("/start") or text.startswith("/thoitiet"):
-            send_telegram_message(chat_id, "⚡ Bot đã sẵn sàng! Đang lắng nghe và tự động gửi Infographic cho cả 3 dạng cảnh báo.")
+            send_telegram_message(chat_id, "⚡ **Bot đã kích hoạt!** Đã lưu Chat ID của bạn. Bot sẽ tự động gửi Infographic cảnh báo dông sét, KTTV và Sạt lở/Lũ quét đúng mốc giờ tròn.")
     return "OK", 200
 
 if __name__ == "__main__":
