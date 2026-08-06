@@ -1,13 +1,11 @@
-import os
-import re
-import io
+import urllib3
 import requests
-import sqlite3
 import hashlib
 from datetime import datetime, timedelta
-from bs4 import BeautifulSoup
-from PIL import Image, ImageDraw, ImageFont
-from flask import Flask, request, jsonify
+from flask import Flask, jsonify
+
+# Tắt triệt để mọi cảnh báo SSL không an toàn trong Log
+urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning
 
 # ==================== CẤU HÌNH HỆ THỐNG ====================
 TELEGRAM_BOT_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN", "8587075816:AAHlm9r7mwCjEQlgmx6Klgmx6KjoZ8AE7Vd844x6s")
@@ -318,13 +316,16 @@ def scrape_lu_quet_sat_lo_cap_xa():
     
     active_communes = []
     
+    # Header giả lập trình duyệt máy tính từ Việt Nam
     headers = {
-        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36',
+        'Accept': 'application/json, text/javascript, */*; q=0.01',
+        'Accept-Language': 'vi-VN,vi;q=0.9,en-US;q=0.8,en;q=0.7',
         'Referer': 'https://luquetsatlo.nchmf.gov.vn/',
-        'X-Requested-With': 'XMLHttpRequest'
+        'X-Requested-With': 'XMLHttpRequest',
+        'Connection': 'keep-alive'
     }
     
-    # Thử cả GET và POST với các API chính của NCHMF
     api_configs = [
         ("https://luquetsatlo.nchmf.gov.vn/Home/getDSCanhbao", "POST"),
         ("https://luquetsatlo.nchmf.gov.vn/Home/getDSCanhbao", "GET"),
@@ -335,9 +336,12 @@ def scrape_lu_quet_sat_lo_cap_xa():
     for api_url, method in api_configs:
         try:
             if method == "POST":
-                res = requests.post(api_url, headers=headers, timeout=10, verify=False)
+                res = requests.post(api_url, headers=headers, timeout=12, verify=False)
             else:
-                res = requests.get(api_url, headers=headers, timeout=10, verify=False)
+                res = requests.get(api_url, headers=headers, timeout=12, verify=False)
+
+            # IN LOG ĐỂ KIỂM TRA PHẢN HỒI TỪ NCHMF
+            print(f"🌐 [NCHMF Test] URL: {api_url} | Method: {method} | Status: {res.status_code} | Size: {len(res.text)} bytes")
 
             if res.status_code == 200:
                 data = res.json()
@@ -350,7 +354,7 @@ def scrape_lu_quet_sat_lo_cap_xa():
                         tinh_id = str(props.get("tinh_id") or props.get("id_tinh") or props.get("province_id") or "").strip()
                         province_name = str(props.get("tentinh") or props.get("ten_tinh") or "").lower()
 
-                        # Lọc chuẩn Mã 33 (Thanh Hóa)
+                        # Lọc mã 33 (Thanh Hóa)
                         if tinh_id == "33" or "thanh hóa" in province_name or "thanh hoá" in province_name:
                             commune = str(
                                 props.get("commune_name_2cap") or 
@@ -366,11 +370,12 @@ def scrape_lu_quet_sat_lo_cap_xa():
                                     active_communes.append(label)
 
                     if len(active_communes) > 0:
+                        print(f"🎯 Đã tìm thấy {len(active_communes)} xã thuộc Thanh Hóa từ {api_url}")
                         break
         except Exception as e:
-            print(f"⚠️ Thử API {api_url} ({method}) thất bại: {e}")
+            print(f"⚠️ Thử API {api_url} ({method}) lỗi: {e}")
 
-    # Phát thông báo Telegram nếu có xã nguy cơ
+    # Broadcast tin lên Telegram nếu phát hiện xã nguy cơ
     if len(active_communes) > 0:
         try:
             sorted_communes = sorted(active_communes)
@@ -419,7 +424,7 @@ def scrape_lu_quet_sat_lo_cap_xa():
                 save_sent_news(alert_id, f"Lũ quét {len(active_communes)} xã")
                 
                 LAST_ALERTED_COMMUNES = active_communes.copy()
-                print(f"✅ Phát thành công cảnh báo cho {len(active_communes)} xã!")
+                print(f"✅ Đã phát Infographic thành công tới các nhóm Telegram!")
         except Exception as e:
             print(f"⚠️ Lỗi phát infographic lũ quét: {e}")
 
