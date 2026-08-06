@@ -316,36 +316,41 @@ LAST_ALERTED_COMMUNES = []
 def scrape_lu_quet_sat_lo_cap_xa():
     global LAST_ALERTED_COMMUNES
     
-    # 💥 QUAN TRỌNG: Khai báo ngay dòng đầu tiên của hàm, ngoài mọi try/for
     active_communes = []
     
     headers = {
-        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
         'Referer': 'https://luquetsatlo.nchmf.gov.vn/',
         'X-Requested-With': 'XMLHttpRequest'
     }
     
-    api_urls = [
-        "https://luquetsatlo.nchmf.gov.vn/Home/getDSCanhbao",
-        "https://luquetsatlo.nchmf.gov.vn/Home/getDSCanhbaoSLLQ"
+    # Thử cả GET và POST với các API chính của NCHMF
+    api_configs = [
+        ("https://luquetsatlo.nchmf.gov.vn/Home/getDSCanhbao", "POST"),
+        ("https://luquetsatlo.nchmf.gov.vn/Home/getDSCanhbao", "GET"),
+        ("https://luquetsatlo.nchmf.gov.vn/Home/getDSCanhbaoSLLQ", "POST"),
+        ("https://luquetsatlo.nchmf.gov.vn/Home/getThongTinXaCB", "POST")
     ]
 
-    # Quét API lấy dữ liệu
-    for api_url in api_urls:
+    for api_url, method in api_configs:
         try:
-            res = requests.post(api_url, headers=headers, timeout=10)
+            if method == "POST":
+                res = requests.post(api_url, headers=headers, timeout=10, verify=False)
+            else:
+                res = requests.get(api_url, headers=headers, timeout=10, verify=False)
+
             if res.status_code == 200:
                 data = res.json()
                 items = data if isinstance(data, list) else data.get("features", data.get("data", []))
                 
-                if isinstance(items, list):
+                if isinstance(items, list) and len(items) > 0:
                     for item in items:
                         props = item.get("properties", item) if isinstance(item, dict) else {}
                         
                         tinh_id = str(props.get("tinh_id") or props.get("id_tinh") or props.get("province_id") or "").strip()
                         province_name = str(props.get("tentinh") or props.get("ten_tinh") or "").lower()
 
-                        # Lọc tỉnh Thanh Hóa (Mã 33)
+                        # Lọc chuẩn Mã 33 (Thanh Hóa)
                         if tinh_id == "33" or "thanh hóa" in province_name or "thanh hoá" in province_name:
                             commune = str(
                                 props.get("commune_name_2cap") or 
@@ -363,9 +368,9 @@ def scrape_lu_quet_sat_lo_cap_xa():
                     if len(active_communes) > 0:
                         break
         except Exception as e:
-            print(f"⚠️ Lỗi gọi API {api_url}: {e}")
+            print(f"⚠️ Thử API {api_url} ({method}) thất bại: {e}")
 
-    # Xử lý phát thông báo & Infographic
+    # Phát thông báo Telegram nếu có xã nguy cơ
     if len(active_communes) > 0:
         try:
             sorted_communes = sorted(active_communes)
@@ -387,7 +392,7 @@ def scrape_lu_quet_sat_lo_cap_xa():
                     "locations": active_communes,
                     "summary": [
                         f"NCHMF ghi nhận {len(active_communes)} xã tại Thanh Hóa nằm trong vùng nguy cơ.",
-                        f"Bổ sung {len(new_communes)} xã mới trong đợt quét này." if new_communes else "Danh sách cập nhật thời gian thực."
+                        f"Bổ sung {len(new_communes)} xã mới." if new_communes else "Danh sách cập nhật thời gian thực."
                     ]
                 }
                 
@@ -414,16 +419,36 @@ def scrape_lu_quet_sat_lo_cap_xa():
                 save_sent_news(alert_id, f"Lũ quét {len(active_communes)} xã")
                 
                 LAST_ALERTED_COMMUNES = active_communes.copy()
-                print(f"✅ Phát cảnh báo thành công cho {len(active_communes)} xã!")
+                print(f"✅ Phát thành công cảnh báo cho {len(active_communes)} xã!")
         except Exception as e:
             print(f"⚠️ Lỗi phát infographic lũ quét: {e}")
 
-    # Luôn trả về Tuple (số_lượng, danh_sách)
     return len(active_communes), active_communes
 # ==================== 4. ROUTES SERVER & CONTROLLER ====================
 @app.route('/')
 def home():
-    global LAST_ALERT_COUNT
+    # Gọi hàm cào dữ liệu Lũ quét
+    lu_quet_count, lu_quet_list = scrape_lu_quet_sat_lo_cap_xa()
+    
+    now_vn_str = (datetime.utcnow() + timedelta(hours=7)).strftime('%H:%M:%S %d/%m/%Y')
+    
+    return jsonify({
+        "bot_info": {
+            "name": "Trạm Mưa Báo Báo Bot",
+            "target_region": "Tỉnh Thanh Hóa (Mã Tỉnh 33)",
+            "status": "ĐANG HOẠT ĐỘNG 24/7 🟢"
+        },
+        "system_time_vn": now_vn_str,
+        "registered_chats_count": len(get_registered_chats()),
+        "warning_sources": {
+            "nchmf_lu_quet_sat_lo": {
+                "active_communes_count": lu_quet_count,
+                "communes_list": lu_quet_list if lu_quet_list else ["Hiện tại NCHMF chưa ghi nhận xã nào ở Thanh Hóa có nguy cơ trong 6h tới"]
+            },
+            "iweather_dong_set": "Tự động quét theo chu kỳ radar",
+            "kttv_thanh_hoa": "Tự động quét bản tin cảnh báo"
+        }
+    })
     
     # 1. Chạy Dạng 1: Dông sét iWeather
     iweather_data = get_iweather_storm_warning()
