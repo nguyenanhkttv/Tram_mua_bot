@@ -320,79 +320,64 @@ def scrape_lu_quet_sat_lo_cap_xa():
     global LAST_ALERTED_COMMUNES
     active_communes = []
     
-    # 1. Khởi tạo Session để giữ Cookie giống hệt Trình duyệt web
+    # Sử dụng Session để lưu giữ Cookie của ASP.NET
     session = requests.Session()
     
     headers = {
         'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36',
         'Accept': 'application/json, text/javascript, */*; q=0.01',
         'Accept-Language': 'vi-VN,vi;q=0.9,en-US;q=0.8',
-        'X-Requested-With': 'XMLHttpRequest',
+        'X-Requested-With': 'XMLHttpRequest', # Bắt buộc đối với ASP.NET AJAX
         'Origin': 'https://luquetsatlo.nchmf.gov.vn',
         'Referer': 'https://luquetsatlo.nchmf.gov.vn/Home',
         'Content-Type': 'application/x-www-form-urlencoded; charset=UTF-8'
     }
 
-    # BƯỚC 1: Mở trang chủ để lấy Cookie phiên làm việc (Session)
     try:
-        session.get('https://luquetsatlo.nchmf.gov.vn/Home', headers=headers, timeout=10, verify=False)
+        # BƯỚC 1: "Gõ cửa" trang chủ để lấy Cookie phiên làm việc ASP.NET_SessionId
+        init_res = session.get('https://luquetsatlo.nchmf.gov.vn/Home', headers=headers, timeout=12, verify=False)
+        print(f"🔑 [ASP.NET Session] Status: {init_res.status_code} | Cookies: {session.cookies.get_dict()}")
+
+        # BƯỚC 2: Gửi POST kèm Cookie + Payload sogiodubao=6
+        payload = {'sogiodubao': '6'}
+        api_url = 'https://luquetsatlo.nchmf.gov.vn/Home/getDSCanhbaoSLLQ'
+
+        res = session.post(api_url, headers=headers, data=payload, timeout=12, verify=False)
+        print(f"🌐 [NCHMF Query] {api_url} | Status: {res.status_code} | Length: {len(res.text)}")
+
+        if res.status_code == 200 and not res.text.startswith("<!DOCTYPE"):
+            data = res.json()
+
+            if isinstance(data, list) and len(data) > 0:
+                for item in data:
+                    if not isinstance(item, dict):
+                        continue
+
+                    # Bóc tách dữ liệu theo đúng cấu trúc DevTools:
+                    prov_ref = str(item.get("province_ref") or item.get("tinh_id") or "").strip()
+                    prov_name = str(item.get("provinceName") or item.get("tentinh") or "").lower()
+
+                    # Lọc mã tỉnh 33 (Thanh Hóa)
+                    if prov_ref == "33" or "thanh hóa" in prov_name or "thanh hoá" in prov_name:
+                        xa_name = item.get("commune_name") or item.get("commune_name_2cap") or item.get("ten_xa") or ""
+                        huyen_name = item.get("district_name") or item.get("ten_huyen") or ""
+
+                        if xa_name:
+                            xa_clean = xa_name.strip()
+                            if not xa_clean.lower().startswith("xã "):
+                                xa_clean = f"Xã {xa_clean}"
+                            
+                            label = f"{xa_clean} ({huyen_name})" if huyen_name else xa_clean
+                            if label not in active_communes:
+                                active_communes.append(label)
+
+                if len(active_communes) > 0:
+                    print(f"🎯 THÀNH CÔNG! Lấy được {len(active_communes)} xã tại Thanh Hóa!")
+
     except Exception as e:
-        print(f"⚠️ Không thể khởi tạo Session NCHMF: {e}")
+        print(f"⚠️ Lỗi truy vấn NCHMF: {e}")
 
-    # BƯỚC 2: Gọi API lấy danh sách cảnh báo
-    payload = {
-        'sogiodubao': '6'
-    }
-
-    # Thử nghiệm cả URL trực tiếp lẫn qua controller Home
-    endpoints = [
-        "https://luquetsatlo.nchmf.gov.vn/Home/getDSCanhbaoSLLQ",
-        "https://luquetsatlo.nchmf.gov.vn/getDSCanhbaoSLLQ",
-        "https://luquetsatlo.nchmf.gov.vn/Home/getDSCanhbao"
-    ]
-
-    for url in endpoints:
-        try:
-            # Gửi POST kèm data payload chuẩn
-            res = session.post(url, headers=headers, data=payload, timeout=10, verify=False)
-            print(f"🌐 [NCHMF Query] {url} | Status: {res.status_code} | Length: {len(res.text)}")
-
-            if res.status_code == 200 and len(res.text) > 50:
-                try:
-                    data = res.json()
-                except Exception:
-                    continue
-
-                if isinstance(data, list) and len(data) > 0:
-                    for item in data:
-                        if not isinstance(item, dict):
-                            continue
-
-                        # Bóc tách đúng theo JSON từ DevTools của bạn:
-                        prov_ref = str(item.get("province_ref") or item.get("tinh_id") or "").strip()
-                        prov_name = str(item.get("provinceName") or item.get("tentinh") or "").lower()
-
-                        # Lọc đúng tỉnh Thanh Hóa (Mã 33)
-                        if prov_ref == "33" or "thanh hóa" in prov_name or "thanh hoá" in prov_name:
-                            xa_name = item.get("commune_name") or item.get("commune_name_2cap") or item.get("ten_xa") or ""
-                            huyen_name = item.get("district_name") or item.get("ten_huyen") or ""
-
-                            if xa_name:
-                                xa_clean = xa_name.strip()
-                                if not xa_clean.lower().startswith("xã "):
-                                    xa_clean = f"Xã {xa_clean}"
-                                
-                                label = f"{xa_clean} ({huyen_name})" if huyen_name else xa_clean
-                                if label not in active_communes:
-                                    active_communes.append(label)
-
-                    if len(active_communes) > 0:
-                        print(f"🎯 THÀNH CÔNG: Lấy được {len(active_communes)} xã tại Thanh Hóa!")
-                        break
-        except Exception as e:
-            print(f"⚠️ Lỗi kết nối {url}: {e}")
-
-    # BƯỚC 3: Phát thông báo Infographic & Bắn Telegram khi có dữ liệu
+    # BƯỚC 3: Phát Infographic & Bắn Telegram
     if len(active_communes) > 0:
         try:
             sorted_communes = sorted(active_communes)
@@ -422,7 +407,7 @@ def scrape_lu_quet_sat_lo_cap_xa():
                 
                 caption = f"🚨 **CẢNH BÁO LŨ QUÉT & SẠT LỞ ĐẤT (NCHMF)**\n"
                 caption += f"🕒 *Cập nhật:* **{now_vn_str}**\n"
-                caption += f"📍 *Số địa phương Thanh Hóa bị ảnh hưởng:* **{len(active_communes)} xã**\n\n"
+                caption += f"📍 *Địa bàn Thanh Hóa cảnh báo:* **{len(active_communes)} xã**\n\n"
                 
                 if new_communes and len(LAST_ALERTED_COMMUNES) > 0:
                     caption += "🔥 **XÃ MỚI BỔ SUNG NGUY CƠ:**\n"
