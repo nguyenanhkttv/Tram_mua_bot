@@ -411,17 +411,17 @@ def home():
     scrape_kttv_thanh_hoa(URL_THOI_TIET, "Thời Tiết Nguy Hiểm")
     scrape_kttv_thanh_hoa(URL_THUY_VAN, "Thủy Văn Đặc Biệt")
 
-    # 3. Chạy Dạng 3: Web Lũ Quét Sạt Lở (Giờ tròn NCHMF)
-    scrape_lu_quet_sat_lo_cap_xa()
+    # 3. Lũ quét NCHMF (Lấy trực tiếp danh sách cào được)
+    lu_quet_count, lu_quet_list = scrape_lu_quet_sat_lo_cap_xa()
 
     now_vn_str = (datetime.utcnow() + timedelta(hours=7)).strftime('%Y-%m-%d %H:%M:%S')
     return jsonify({
         "status": "system_running",
         "time_vn": now_vn_str,
-        "registered_chats_count": len(get_registered_chats()),
-        "registered_chats": get_registered_chats()
+        "lu_quet_count": lu_quet_count,
+        "lu_quet_communes": lu_quet_list,  # <-- In thẳng danh sách xã ra đây
+        "registered_chats_count": len(get_registered_chats())
     })
-
 @app.route(f'/{TELEGRAM_BOT_TOKEN}', methods=['POST'])
 @app.route('/webhook', methods=['POST'])
 def telegram_webhook():
