@@ -1,3 +1,4 @@
+import os
 import urllib3
 import requests
 import hashlib
@@ -8,7 +9,7 @@ from flask import Flask, jsonify
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
 # ==================== CẤU HÌNH HỆ THỐNG ====================
-TELEGRAM_BOT_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN", "8587075816:AAHlm9r7mwCjEQlgmx6Klgmx6KjoZ8AE7Vd844x6s")
+TELEGRAM_BOT_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN", "8587075816:AAH1m9r7mwCjEQ1gmx6K1gmx6KjoZ8AE7Vd844x6s")
 TELEGRAM_API_URL = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}"
 
 IWEATHER_STORM_URL = "https://iweather.gov.vn/product/warningstorm?token=null"
