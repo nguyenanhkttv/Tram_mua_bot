@@ -117,13 +117,29 @@ def generate_infographic_html(data):
 </body>
 </html>"""
 
+import shutil
 def render_infographic_image(html_code, filename="infographic.png"):
-    """Render HTML sang PNG cho server Headless"""
+    """Render HTML sang PNG hỗ trợ Render Headless Environment"""
     try:
-        hti = Html2Image(custom_flags=['--no-sandbox', '--disable-dev-shm-usage', '--disable-gpu'])
+        # Tìm đường dẫn chromium hoặc chrome trên hệ thống
+        browser_path = shutil.which("chromium") or shutil.which("chromium-browser") or shutil.which("google-chrome")
+        
+        custom_flags = [
+            '--no-sandbox',
+            '--disable-dev-shm-usage',
+            '--disable-gpu',
+            '--headless'
+        ]
+        
+        if browser_path:
+            hti = Html2Image(browser_executable=browser_path, custom_flags=custom_flags)
+        else:
+            hti = Html2Image(custom_flags=custom_flags)
+            
         temp_html = "temp_render.html"
         with open(temp_html, "w", encoding="utf-8") as f:
             f.write(html_code)
+            
         hti.screenshot(html_file=temp_html, save_as=filename, size=(820, 750))
         return filename
     except Exception as e:
@@ -233,7 +249,7 @@ def run_all_checks():
     if iweather_data.get("status") == "success":
         cur_cnt = iweather_data.get("count", 0)
         if iweather_data.get("has_warning") and cur_cnt != LAST_ALERT_COUNT:
-            msg = f"⚠️ **CẢNH BÁO TỰ ĐỘNG: PHÁT HIỆN DÔNG SÉT TẠI THANH HÓA!**\n🕒 *Thời gian:* {iweather_data['updated_at']}\n📍 **Số khu vực:** {cur_cnt}\n"
+            msg = f"⚠️ **CẢNH BÁO TỰ ĐỘNG: PHÁT HIỆN DÔNG SÉT TẠI THANH HÓA!**\n🕒 *Thời gian:* {iweather_data['updated_at']}\n📍 **Số khu vực phát hiện:** {cur_cnt}\n"
             for idx, a in enumerate(iweather_data['alerts'], 1):
                 msg += f"\n**{idx}.** {a['location']}"
             msg += "\n\n🌐 Radar: https://iweather.gov.vn/"
