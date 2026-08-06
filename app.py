@@ -340,18 +340,24 @@ def scrape_lu_quet_sat_lo_cap_xa():
         print(f"⚠️ Không thể khởi tạo Session NCHMF: {e}")
 
     # BƯỚC 2: Gọi API lấy danh sách cảnh báo
+    payload = {
+        'sogiodubao': '6'
+    }
+
+    # Thử nghiệm cả URL trực tiếp lẫn qua controller Home
     endpoints = [
         "https://luquetsatlo.nchmf.gov.vn/Home/getDSCanhbaoSLLQ",
+        "https://luquetsatlo.nchmf.gov.vn/getDSCanhbaoSLLQ",
         "https://luquetsatlo.nchmf.gov.vn/Home/getDSCanhbao"
     ]
 
     for url in endpoints:
         try:
-            # Gửi POST request kèm Session Cookie
-            res = session.post(url, headers=headers, data={}, timeout=10, verify=False)
-            print(f"🌐 [NCHMF Query] {url} | POST | Status: {res.status_code}")
+            # Gửi POST kèm data payload chuẩn
+            res = session.post(url, headers=headers, data=payload, timeout=10, verify=False)
+            print(f"🌐 [NCHMF Query] {url} | Status: {res.status_code} | Length: {len(res.text)}")
 
-            if res.status_code == 200:
+            if res.status_code == 200 and len(res.text) > 50:
                 try:
                     data = res.json()
                 except Exception:
