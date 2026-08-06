@@ -407,19 +407,23 @@ def home():
     elif not iweather_data["has_warning"]:
         LAST_ALERT_COUNT = 0
 
-    # 2. Chạy Dạng 2: Web Đài KTTV Thanh Hóa
+   # 2. Chạy Dạng 2: KTTV Thanh Hóa
     scrape_kttv_thanh_hoa(URL_THOI_TIET, "Thời Tiết Nguy Hiểm")
     scrape_kttv_thanh_hoa(URL_THUY_VAN, "Thủy Văn Đặc Biệt")
 
-    # 3. Lũ quét NCHMF (Lấy trực tiếp danh sách cào được)
-    lu_quet_count, lu_quet_list = scrape_lu_quet_sat_lo_cap_xa()
+    # 3. Chạy Dạng 3: Lũ quét NCHMF (Xử lý an toàn)
+    try:
+        lu_quet_count, lu_quet_list = return len(active_communes), active_communes
+    except Exception as e:
+        print(f"❌ Lỗi chạy Lũ quét: {e}")
+        lu_quet_count, lu_quet_list = 0, []
 
     now_vn_str = (datetime.utcnow() + timedelta(hours=7)).strftime('%Y-%m-%d %H:%M:%S')
     return jsonify({
         "status": "system_running",
         "time_vn": now_vn_str,
         "lu_quet_count": lu_quet_count,
-        "lu_quet_communes": lu_quet_list,  # <-- In thẳng danh sách xã ra đây
+        "lu_quet_communes": lu_quet_list,
         "registered_chats_count": len(get_registered_chats())
     })
 @app.route(f'/{TELEGRAM_BOT_TOKEN}', methods=['POST'])
