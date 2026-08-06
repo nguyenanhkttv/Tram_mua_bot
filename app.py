@@ -1,12 +1,15 @@
 import os
-import urllib3
+import time
 import sqlite3
-import requests
+import threading
 import hashlib
+import urllib3
+import requests  # Thư viện cào API
 from datetime import datetime, timedelta
-from flask import Flask, jsonify
+from flask import Flask, jsonify, request  # Thêm 'request' của Flask ở đây
+from PIL import Image, ImageDraw, ImageFont  # Thư viện vẽ Infographic (nếu có)
 
-# Tắt triệt để mọi cảnh báo SSL không an toàn trong Log
+# Tắt cảnh báo SSL
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
 # ==================== CẤU HÌNH HỆ THỐNG ====================
