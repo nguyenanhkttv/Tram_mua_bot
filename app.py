@@ -310,13 +310,13 @@ def scrape_kttv_thanh_hoa(url, category_name):
     except Exception as e:
         print(f"❌ Lỗi cào KTTV Thanh Hóa: {e}")
 
-# ==================== DẠNG 3: LŨ QUÉT - FIX LỖI NAME_ERROR & THEO DÕI BIẾN ĐỘNG ====================
+# ==================== DẠNG 3: LŨ QUÉT - CHỐNG LỖI SCOPE BIẾN ====================
 LAST_ALERTED_COMMUNES = []
 
 def scrape_lu_quet_sat_lo_cap_xa():
     global LAST_ALERTED_COMMUNES
     
-    # Khai báo biến ngay dòng ĐẦU TIÊN để tránh lỗi NameError
+    # 💥 QUAN TRỌNG: Khai báo ngay dòng đầu tiên của hàm, ngoài mọi try/for
     active_communes = []
     
     headers = {
@@ -330,22 +330,22 @@ def scrape_lu_quet_sat_lo_cap_xa():
         "https://luquetsatlo.nchmf.gov.vn/Home/getDSCanhbaoSLLQ"
     ]
 
+    # Quét API lấy dữ liệu
     for api_url in api_urls:
         try:
             res = requests.post(api_url, headers=headers, timeout=10)
-
             if res.status_code == 200:
                 data = res.json()
                 items = data if isinstance(data, list) else data.get("features", data.get("data", []))
                 
-                if isinstance(items, list) and len(items) > 0:
+                if isinstance(items, list):
                     for item in items:
                         props = item.get("properties", item) if isinstance(item, dict) else {}
                         
                         tinh_id = str(props.get("tinh_id") or props.get("id_tinh") or props.get("province_id") or "").strip()
                         province_name = str(props.get("tentinh") or props.get("ten_tinh") or "").lower()
 
-                        # Kiểm tra mã Tỉnh 33 (Thanh Hóa)
+                        # Lọc tỉnh Thanh Hóa (Mã 33)
                         if tinh_id == "33" or "thanh hóa" in province_name or "thanh hoá" in province_name:
                             commune = str(
                                 props.get("commune_name_2cap") or 
@@ -360,13 +360,12 @@ def scrape_lu_quet_sat_lo_cap_xa():
                                 if label not in active_communes:
                                     active_communes.append(label)
 
-                    # Đã cào được xã của Thanh Hóa thì thoát lặp API
                     if len(active_communes) > 0:
                         break
         except Exception as e:
-            print(f"⚠️ Lỗi kết nối API NCHMF ({api_url}): {e}")
+            print(f"⚠️ Lỗi gọi API {api_url}: {e}")
 
-    # Tiến hành xử lý gửi tin nhắn & Infographic nếu có xã nguy cơ
+    # Xử lý phát thông báo & Infographic
     if len(active_communes) > 0:
         try:
             sorted_communes = sorted(active_communes)
@@ -417,8 +416,9 @@ def scrape_lu_quet_sat_lo_cap_xa():
                 LAST_ALERTED_COMMUNES = active_communes.copy()
                 print(f"✅ Phát cảnh báo thành công cho {len(active_communes)} xã!")
         except Exception as e:
-            print(f"⚠️ Lỗi phát sinh khi tạo ảnh/gửi tin lũ quét: {e}")
+            print(f"⚠️ Lỗi phát infographic lũ quét: {e}")
 
+    # Luôn trả về Tuple (số_lượng, danh_sách)
     return len(active_communes), active_communes
 # ==================== 4. ROUTES SERVER & CONTROLLER ====================
 @app.route('/')
@@ -445,7 +445,7 @@ def home():
 
     # 3. Chạy Dạng 3: Lũ quét NCHMF (Xử lý an toàn)
     try:
-        return len(active_communes), active_communes
+        lu_quet_count, lu_quet_list = scrape_lu_quet_sat_lo_cap_xa()
     except Exception as e:
         print(f"❌ Lỗi chạy Lũ quét: {e}")
         lu_quet_count, lu_quet_list = 0, []
