@@ -427,10 +427,14 @@ def scrape_lu_quet_sat_lo_cap_xa():
 # ==================== 4. ROUTES SERVER & CONTROLLER ====================
 @app.route('/')
 def home():
-    # Gọi hàm cào dữ liệu Lũ quét
+    # 1. Gọi hàm cào dữ liệu Lũ quét
     lu_quet_count, lu_quet_list = scrape_lu_quet_sat_lo_cap_xa()
     
+    # 2. Lấy thời gian hiện tại
     now_vn_str = (datetime.utcnow() + timedelta(hours=7)).strftime('%H:%M:%S %d/%m/%Y')
+    
+    # 3. Lấy trực tiếp danh sách Telegram Chat ID đã đăng ký trong SQLite
+    chats_list = get_registered_chats()
     
     return jsonify({
         "bot_info": {
@@ -439,7 +443,10 @@ def home():
             "status": "ĐANG HOẠT ĐỘNG 24/7 🟢"
         },
         "system_time_vn": now_vn_str,
-        "registered_chats_count": len(get_registered_chats()),
+        "telegram_subscribers": {
+            "count": len(chats_list),
+            "registered_chat_ids": chats_list  # <-- IN TRỰC TIẾP DANH SÁCH ID TELEGRAM RA ĐÂY
+        },
         "warning_sources": {
             "nchmf_lu_quet_sat_lo": {
                 "active_communes_count": lu_quet_count,
