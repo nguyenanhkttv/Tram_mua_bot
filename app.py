@@ -9,6 +9,7 @@ from html2image import Html2Image
 
 # ==================== CẤU HÌNH GLOBAL ====================
 IWEATHER_STORM_URL = "https://iweather.gov.vn/product/warningstorm?token=null"
+VNDMS_WARNING_EVENT_URL = "https://vndms.gov.vn/api/WarningEvent"
 KTTV_URLS = [
     "https://kttv.thanhhoa.gov.vn/tin-tuc/thoi-tiet-nguy-hiem/43",
     "https://kttv.thanhhoa.gov.vn/tin-tuc/thuy-van-dac-biet/46"
@@ -40,10 +41,11 @@ def save_chat(chat_id):
 
 LAST_ALERT_COUNT = 0
 PROCESSED_NEWS_URLS = set()
+LAST_DISASTER_COUNT = 0
 
 # ==================== 1. TẠO INFOGRAPHIC HTML & RENDER ẢNH ====================
 def generate_infographic_html(data):
-    """Tạo HTML Infographic phong cách Glassmorphism Neon"""
+    """Tạo HTML Infographic phong cách Glassmorphism Neon tích hợp sự kiện thiên tai"""
     is_thuy_van = "thuy-van" in data.get('type', '')
     category_badge = "CẢNH BÁO THỦY VĂN" if is_thuy_van else "CẢNH BÁO THỜI TIẾT"
     bg_gradient = "linear-gradient(135deg, #0f2027 0%, #203a43 50%, #2c5364 100%)" if is_thuy_van else "linear-gradient(135deg, #1e130c 0%, #9a400e 50%, #e65c00 100%)"
@@ -54,6 +56,23 @@ def generate_infographic_html(data):
     risk_level = data.get('risk_level', 'Cấp 1 - 2. Cần chú ý theo dõi sát diễn biến.')
     affected_area = data.get('affected_area', 'Địa bàn tỉnh Thanh Hóa.')
     summary = data.get('summary', 'Chi tiết xem tại cổng thông tin Đài KTTV Thanh Hóa.')
+
+    # Khối hiển thị Sự kiện thiên tai VNDMS (nếu có)
+    disaster_block = ""
+    disaster_events = data.get('disaster_events', [])
+    if disaster_events:
+        event_items = ""
+        for ev in disaster_events:
+            name = ev.get('Name') or ev.get('title') or "Sự kiện thiên tai đang diễn ra"
+            level = ev.get('Level') or ev.get('level') or "Đang theo dõi"
+            event_items += f"• 🌀 <b>{name}</b> (Cấp độ: {level})<br>"
+            
+        disaster_block = f"""
+        <div class="info-box danger-event" style="margin-bottom: 15px; background: rgba(255, 71, 87, 0.25); border-left: 4px solid #ff4757; padding: 12px; border-radius: 10px;">
+            <h3 style="color: #ff6b81; font-size: 12px; margin-bottom: 5px;">🌀 THIÊN TAI ĐANG DIỄN RA (VNDMS):</h3>
+            <p style="font-size: 13px; color: #ffffff;">{event_items}</p>
+        </div>
+        """
 
     return f"""<!DOCTYPE html>
 <html lang="vi">
@@ -78,7 +97,7 @@ def generate_infographic_html(data):
         }}
         .header h1 {{ font-size: 20px; color: #ffffff; line-height: 1.3; }}
         .time-tag {{ font-size: 12px; color: #dfe4ea; margin-top: 5px; }}
-        .grid-info {{ display: flex; gap: 15px; margin-bottom: 20px; }}
+        .grid-info {{ display: flex; gap: 15px; margin-bottom: 15px; }}
         .info-box {{
             flex: 1; background: rgba(0, 0, 0, 0.25); padding: 15px; border-radius: 12px; border-left: 4px solid #eccc68;
         }}
@@ -107,6 +126,9 @@ def generate_infographic_html(data):
                 <div class="time-tag">📅 Cập nhật: {date} | Đài KTTV Tỉnh Thanh Hóa</div>
             </div>
         </div>
+
+        {disaster_block}
+
         <div class="grid-info">
             <div class="info-box danger">
                 <h3>⚠️ Cấp độ Rủi ro</h3>
@@ -123,7 +145,7 @@ def generate_infographic_html(data):
         </div>
         <div class="footer">
             <span>🤖 Telegram Weather Bot System</span>
-            <span class="source">🌐 kttv.thanhhoa.gov.vn</span>
+            <span class="source">🌐 kttv.thanhhoa.gov.vn | vndms.gov.vn</span>
         </div>
     </div>
 </body>
@@ -132,7 +154,6 @@ def generate_infographic_html(data):
 def render_infographic_image(html_code, filename="infographic.png"):
     """Render HTML sang file ảnh PNG với Flag tương thích Server Headless"""
     try:
-        # Cấu hình cờ Chạy ẩn (Headless) cho Linux/VPS
         custom_flags = ['--no-sandbox', '--disable-dev-shm-usage', '--disable-gpu']
         hti = Html2Image(custom_flags=custom_flags)
         
@@ -140,7 +161,7 @@ def render_infographic_image(html_code, filename="infographic.png"):
         with open(temp_html, "w", encoding="utf-8") as f:
             f.write(html_code)
             
-        hti.screenshot(html_file=temp_html, save_as=filename, size=(820, 720))
+        hti.screenshot(html_file=temp_html, save_as=filename, size=(820, 750))
         return filename
     except Exception as e:
         print(f"Lỗi render ảnh: {e}")
@@ -172,7 +193,7 @@ def scrape_kttv_thanhhoa():
             
     return articles
 
-# ==================== 3. XỬ LÝ DỮ LIỆU IWEATHER ====================
+# ==================== 3. XỬ LÝ DỮ LIỆU IWEATHER & VNDMS ====================
 def get_iweather_storm_warning(province_keyword="Thanh Hóa"):
     headers = {
         'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)',
@@ -205,6 +226,33 @@ def get_iweather_storm_warning(province_keyword="Thanh Hóa"):
     except Exception as e:
         return {"status": "error", "message": str(e)}
 
+def get_vndms_disaster_events():
+    """Lấy danh sách sự kiện thiên tai từ Hệ thống Giám sát Thiên tai VNDMS"""
+    headers = {
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)',
+        'Referer': 'https://vndms.gov.vn/'
+    }
+    try:
+        res = requests.get(VNDMS_WARNING_EVENT_URL, headers=headers, timeout=10)
+        if res.status_code == 200:
+            data = res.json()
+            events = []
+            if isinstance(data, list):
+                events = data
+            elif isinstance(data, dict):
+                events = data.get('data', []) or data.get('events', []) or data.get('items', [])
+
+            return {
+                "status": "success",
+                "has_event": len(events) > 0,
+                "count": len(events),
+                "events": events
+            }
+    except Exception as e:
+        print(f"Lỗi truy vấn VNDMS: {e}")
+
+    return {"status": "error", "has_event": False, "count": 0, "events": []}
+
 # ==================== 4. GỬI TELEGRAM ====================
 def send_telegram_message(chat_id, text):
     url = f"{TELEGRAM_API_URL}/sendMessage"
@@ -233,7 +281,7 @@ def broadcast_alert(text=None, photo_path=None, caption=""):
 # ==================== 5. ROUTES ====================
 @app.route('/')
 def home():
-    global LAST_ALERT_COUNT, PROCESSED_NEWS_URLS
+    global LAST_ALERT_COUNT, PROCESSED_NEWS_URLS, LAST_DISASTER_COUNT
     now_vn = (datetime.utcnow() + timedelta(hours=7)).strftime("%H:%M %d/%m/%Y")
     
     # --- A. Kiểm tra Dông Sét iWeather ---
@@ -252,7 +300,20 @@ def home():
         elif not iweather_data.get("has_warning"):
             LAST_ALERT_COUNT = 0
 
-    # --- B. Quét Bản tin mới & Bắn Infographic ---
+    # --- B. Kiểm tra Sự kiện thiên tai VNDMS ---
+    disaster_data = get_vndms_disaster_events()
+    if disaster_data.get("has_event") and disaster_data.get("count", 0) != LAST_DISASTER_COUNT:
+        msg = f"🌀 **CẢNH BÁO THIÊN TAI ĐANG DIỄN RA (VNDMS)!**\n"
+        msg += f"📍 **Số sự kiện ghi nhận:** {disaster_data['count']}\n"
+        for idx, ev in enumerate(disaster_data['events'], 1):
+            name = ev.get('Name') or ev.get('title') or "Sự kiện thiên tai"
+            level = ev.get('Level') or ev.get('level') or "Cần theo dõi"
+            msg += f"\n**{idx}.** {name} *(Cấp độ: {level})*"
+        msg += "\n\n🌐 Giám sát: https://vndms.gov.vn/"
+        broadcast_alert(text=msg)
+        LAST_DISASTER_COUNT = disaster_data['count']
+
+    # --- C. Quét Bản tin mới KTTV & Bắn Infographic ---
     articles = scrape_kttv_thanhhoa()
     for art in articles[:2]:
         if art['url'] not in PROCESSED_NEWS_URLS:
@@ -264,7 +325,8 @@ def home():
                 'date': now_vn,
                 'risk_level': 'Cảnh báo cấp 1 - 2. Mưa dông, lốc, sét & dâng trào thủy văn.',
                 'affected_area': 'Địa bàn tỉnh Thanh Hóa (Đặc biệt vùng núi & ven biển).',
-                'summary': f"Bản tin chi tiết được cập nhật từ Đài KTTV Thanh Hóa.<br>Đường dẫn: <a href='{art['url']}' style='color:#70a1ff;'>{art['url']}</a>"
+                'summary': f"Bản tin chi tiết được cập nhật từ Đài KTTV Thanh Hóa.<br>Đường dẫn: <a href='{art['url']}' style='color:#70a1ff;'>{art['url']}</a>",
+                'disaster_events': disaster_data.get('events', [])
             }
             
             html_code = generate_infographic_html(info_data)
@@ -278,6 +340,7 @@ def home():
         "status": "running",
         "active_chats_count": len(load_chats()),
         "last_alert_count": LAST_ALERT_COUNT,
+        "last_disaster_count": LAST_DISASTER_COUNT,
         "processed_news_count": len(PROCESSED_NEWS_URLS)
     })
 
@@ -289,11 +352,11 @@ def telegram_webhook():
         chat_id = message["chat"]["id"]
         text = message.get("text", "")
 
-        # Lưu Chat ID vào file
+        # Lưu Chat ID
         save_chat(chat_id)
 
-        if text.startswith("/start") or text.startswith("/dong") or text.startswith("/dongset"):
-            send_telegram_message(chat_id, "⚡ Đang kiểm tra Dông Sét & cào bản tin mới nhất...")
+        if text.startswith("/start") or text.startswith("/dong") or text.startswith("/thientai"):
+            send_telegram_message(chat_id, "⚡ Đang tra cứu Dông sét, Thiên tai VNDMS & Bản tin mới nhất...")
             
             # 1. Trả về dông sét
             dw = get_iweather_storm_warning("Thanh Hóa")
@@ -307,7 +370,17 @@ def telegram_webhook():
                     msg = f"✅ **AN TOÀN ({dw['updated_at']}):** Chưa phát hiện mây dông sét tại Thanh Hóa."
                 send_telegram_message(chat_id, msg)
 
-            # 2. Gửi Infographic bản tin mới nhất
+            # 2. Trả về sự kiện thiên tai VNDMS
+            disaster_data = get_vndms_disaster_events()
+            if disaster_data.get("has_event"):
+                msg_dis = f"🌀 **SỰ KIỆN THIÊN TAI ĐANG DIỄN RA (VNDMS):**\n"
+                for idx, ev in enumerate(disaster_data['events'], 1):
+                    name = ev.get('Name') or ev.get('title') or "Thiên tai"
+                    level = ev.get('Level') or ev.get('level') or "Cần theo dõi"
+                    msg_dis += f"\n**{idx}.** {name} *(Cấp độ: {level})*"
+                send_telegram_message(chat_id, msg_dis)
+
+            # 3. Gửi Infographic bản tin mới nhất
             articles = scrape_kttv_thanhhoa()
             if articles:
                 top_art = articles[0]
@@ -318,7 +391,8 @@ def telegram_webhook():
                     'date': now_vn,
                     'risk_level': 'Cảnh báo rủi ro thiên tai do mưa lớn, lốc, sét & ngập lụt.',
                     'affected_area': 'Địa bàn tỉnh Thanh Hóa.',
-                    'summary': f"Bản tin chi tiết xem tại: {top_art['url']}"
+                    'summary': f"Bản tin chi tiết xem tại: {top_art['url']}",
+                    'disaster_events': disaster_data.get('events', [])
                 }
                 html_code = generate_infographic_html(info_data)
                 img_path = render_infographic_image(html_code, "user_req_infographic.png")
