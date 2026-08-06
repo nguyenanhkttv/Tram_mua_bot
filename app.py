@@ -5,7 +5,7 @@ from datetime import datetime, timedelta
 from flask import Flask, jsonify
 
 # Tắt triệt để mọi cảnh báo SSL không an toàn trong Log
-urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning
+urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
 # ==================== CẤU HÌNH HỆ THỐNG ====================
 TELEGRAM_BOT_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN", "8587075816:AAHlm9r7mwCjEQlgmx6Klgmx6KjoZ8AE7Vd844x6s")
