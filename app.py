@@ -3,6 +3,7 @@ import re
 import io
 import requests
 import sqlite3
+import hashlib
 from datetime import datetime, timedelta
 from bs4 import BeautifulSoup
 from PIL import Image, ImageDraw, ImageFont
@@ -309,26 +310,29 @@ def scrape_kttv_thanh_hoa(url, category_name):
     except Exception as e:
         print(f"❌ Lỗi cào KTTV Thanh Hóa: {e}")
 
-# ==================== DẠNG 3: LŨ QUÉT SẠT LỞ CẤP XÃ (NCHMF) ====================
+# ==================== DẠNG 3: LŨ QUÉT - THEO DÕI BIẾN ĐỘNG XÃ THEO REALTIME ====================
+# Biến toàn cục lưu danh sách xã của lần báo trước để so sánh xã mới
+LAST_ALERTED_COMMUNES = []
+
 def scrape_lu_quet_sat_lo_cap_xa():
+    global LAST_ALERTED_COMMUNES
+    
     headers = {
-        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)',
-        'Referer': 'https://luquetsatlo.nchmf.gov.vn/'
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
+        'Referer': 'https://luquetsatlo.nchmf.gov.vn/',
+        'X-Requested-With': 'XMLHttpRequest'
     }
     
-    # 📌 KHAI BÁO BIẾN (Đã bổ sung biến khởi tạo)
     active_communes = []
     
-    api_configs = [
-        ("https://luquetsatlo.nchmf.gov.vn/Home/getDSCanhbaoSLLQ", "GET"),
-        ("https://luquetsatlo.nchmf.gov.vn/Home/getDSCanhbaoSLLQ", "POST"),
-        ("https://luquetsatlo.nchmf.gov.vn/Home/getThongTinXaCBTheoVungVe", "POST"),
-        ("https://luquetsatlo.nchmf.gov.vn/Home/InitTrongDiemTheoSLLQ", "POST")
+    api_urls = [
+        "https://luquetsatlo.nchmf.gov.vn/Home/getDSCanhbao",
+        "https://luquetsatlo.nchmf.gov.vn/Home/getDSCanhbaoSLLQ"
     ]
 
-    for api_url, method in api_configs:
+    for api_url in api_urls:
         try:
-            res = requests.get(api_url, headers=headers, timeout=10) if method == "GET" else requests.post(api_url, headers=headers, timeout=10)
+            res = requests.post(api_url, headers=headers, timeout=10)
 
             if res.status_code == 200:
                 data = res.json()
@@ -340,66 +344,89 @@ def scrape_lu_quet_sat_lo_cap_xa():
                 for item in items:
                     props = item.get("properties", item) if isinstance(item, dict) else {}
                     
-                    tinh_id = str(props.get("tinh_id") or props.get("id_tinh") or props.get("province_id") or props.get("matinh") or "").strip()
-                    province_name = str(props.get("tentinh") or props.get("ten_tinh") or props.get("TenTinh") or "").lower()
+                    tinh_id = str(props.get("tinh_id") or props.get("id_tinh") or props.get("province_id") or "").strip()
+                    province_name = str(props.get("tentinh") or props.get("ten_tinh") or "").lower()
 
-                    # Lọc chuẩn theo ID tỉnh 33 (Thanh Hóa)
-                    is_thanh_hoa = (tinh_id == "33") or ("thanh hóa" in province_name or "thanh hoá" in province_name)
-
-                    if is_thanh_hoa:
+                    # Lọc chuẩn Thanh Hóa (Mã 33)
+                    if tinh_id == "33" or "thanh hóa" in province_name or "thanh hoá" in province_name:
                         commune = str(
                             props.get("commune_name_2cap") or 
                             props.get("xaname_2cap") or 
                             props.get("ten_xa") or 
-                            props.get("TenXa") or 
-                            props.get("xa") or ""
+                            props.get("TenXa") or ""
                         ).strip()
 
                         if commune:
                             commune_clean = commune[3:].strip() if commune.lower().startswith("xã ") else commune
                             label = f"Xã {commune_clean}"
-                            
                             if label not in active_communes:
                                 active_communes.append(label)
 
                 if active_communes:
                     break
         except Exception as e:
-            print(f"⚠️ Lỗi kết nối API NCHMF ({api_url}): {e}")
+            print(f"⚠️ Lỗi kết nối NCHMF ({api_url}): {e}")
 
-    # Phát Infographic & Thông báo Telegram
+    # XỬ LÝ PHÁT CẢNH BÁO KHI CÓ XÃ MỚI HOẶC DANH SÁCH THAY ĐỔI
     if active_communes:
-        now_vn_dt = datetime.utcnow() + timedelta(hours=7)
-        now_vn_str = now_vn_dt.strftime('%H:00 %d/%m/%Y')
-        hour_stamp = now_vn_dt.strftime('%Y%m%d%H')
+        # 1. Sắp xếp danh sách xã & tạo mã Hash MD5 đại diện cho tập hợp xã này
+        sorted_communes = sorted(active_communes)
+        communes_str = ",".join(sorted_communes)
+        communes_hash = hashlib.md5(communes_str.encode('utf-8')).hexdigest()[:10]
         
-        alert_id = f"luquet_th_{len(active_communes)}_{hour_stamp}"
+        # Mã alert_id độc nhất theo tập hợp xã
+        alert_id = f"luquet_hash_{communes_hash}"
         
+        # 2. Kiểm tra nếu tập hợp xã này CHƯA TỪNG được báo
         if not is_news_sent(alert_id):
-            title = f"CẢNH BÁO LŨ QUÉT & SẠT LỞ ĐẤT TẠI {len(active_communes)} XÃ (CẬP NHẬT {now_vn_str})"
+            now_vn_dt = datetime.utcnow() + timedelta(hours=7)
+            now_vn_str = now_vn_dt.strftime('%H:%M %d/%m/%Y')
+            
+            # Tìm danh sách các xã MỚI BỔ SUNG so với lần phát trước
+            new_communes = [xa for xa in active_communes if xa not in LAST_ALERTED_COMMUNES]
+            
+            title = f"CẢNH BÁO LŨ QUÉT & SẠT LỞ ĐẤT TẠI {len(active_communes)} XÃ"
             parsed_data = {
                 "rainfall": "Nguy cơ cao trong 06h tới",
                 "risk_level": "CẤP 1 - TRUNG BÌNH / CAO",
                 "locations": active_communes,
-                "summary": [f"NCHMF ghi nhận {len(active_communes)} xã/phường tại Thanh Hóa nằm trong vùng nguy cơ."]
+                "summary": [
+                    f"NCHMF ghi nhận {len(active_communes)} xã tại Thanh Hóa nằm trong vùng nguy cơ.",
+                    f"Xã mới bổ sung trong đợt quét này: {len(new_communes)} xã" if new_communes else "Danh sách cập nhật thời gian thực."
+                ]
             }
             
+            # Tạo Infographic
             img_bytes = create_infographic("BẢN TIN LŨ QUÉT & SẠT LỞ CẤP XÃ", title, parsed_data, now_vn_str)
             
-            caption = f"🚨 **BẢN TIN CẢNH BÁO LŨ QUÉT & SẠT LỞ ĐẤT**\n"
-            caption += f"🕒 *Mốc cập nhật:* **{now_vn_str}**\n"
-            caption += f"📍 **Tổng số địa bàn nguy cơ:** {len(active_communes)} xã\n\n"
-            caption += "🔻 **DANH SÁCH XÃ BIẾN ĐỘNG TRONG GIỜ:**\n"
-            for idx, xa in enumerate(active_communes, 1):
-                caption += f"  {idx}. {xa}\n"
-            caption += "\n🌐 [Xem bản đồ trực quan NCHMF](https://luquetsatlo.nchmf.gov.vn)"
+            # Soạn tin nhắn Telegram
+            caption = f"🚨 **CẢNH BÁO LŨ QUÉT & SẠT LỞ ĐẤT (CẬP NHẬT MỚI)**\n"
+            caption += f"🕒 *Mốc thời gian:* **{now_vn_str}**\n"
+            caption += f"📍 *Tổng số địa bàn nguy cơ:* **{len(active_communes)} xã**\n\n"
             
+            # Nếu có xã mới bổ sung -> Nổi bật lên đầu tin nhắn
+            if new_communes and len(LAST_ALERTED_COMMUNES) > 0:
+                caption += "🔥 **XÃ MỚI BỔ SUNG NGUY CƠ:**\n"
+                for xa in new_communes:
+                    caption += f"  🆕 **{xa}**\n"
+                caption += "\n"
+
+            caption += "🔻 **TOÀN BỘ DANH SÁCH XÃ NGUY CƠ:**\n"
+            for idx, xa in enumerate(active_communes, 1):
+                is_new_mark = " 🆕" if xa in new_communes and len(LAST_ALERTED_COMMUNES) > 0 else ""
+                caption += f"  {idx}. {xa}{is_new_mark}\n"
+                
+            caption += "\n🌐 [Bản đồ trực quan NCHMF](https://luquetsatlo.nchmf.gov.vn)"
+            
+            # Broadcast về Telegram & Lưu DB
             broadcast_photo(img_bytes, caption)
-            save_sent_news(alert_id, title)
-            print(f"✅ [MỐC {now_vn_str}] Phát thành công cảnh báo Lũ quét cho {len(active_communes)} xã!")
+            save_sent_news(alert_id, f"Lũ quét {len(active_communes)} xã: {communes_str}")
+            
+            # Cập nhật lại bộ nhớ tạm các xã vừa báo
+            LAST_ALERTED_COMMUNES = active_communes.copy()
+            print(f"✅ [MỚI] Phát cảnh báo lũ quét! {len(new_communes)} xã mới được phát hiện.")
 
     return len(active_communes), active_communes
-
 # ==================== 4. ROUTES SERVER & CONTROLLER ====================
 @app.route('/')
 def home():
