@@ -1,5 +1,6 @@
 import os
 import urllib3
+import sqlite3
 import requests
 import hashlib
 from datetime import datetime, timedelta
