@@ -42,31 +42,27 @@ LAST_ALERT_COUNT = 0
 PROCESSED_NEWS_URLS = set()
 LAST_DISASTER_COUNT = 0
 
-# ==================== 1. ĐỊNH DẠNG TIN NHẮN CARD TELEGRAM ====================
-def generate_telegram_infographic(data):
-    """Tạo tin nhắn Card Infographic bóc tách chính xác dữ liệu VNDMS & KTTV"""
-    badge = "⚡ <b>CẢNH BÁO THỜI TIẾT & THIÊN TAI</b>"
-    title = data.get('title', 'CẢNH BÁO THIÊN TAI HỆ THỐNG VNDMS')
-    date = data.get('date', datetime.now().strftime("%H:%M %d/%m/%Y"))
+# ==================== 1. ĐỊNH DẠNG TÁCH BIỆT THẺ TELEGRAM ====================
+
+def generate_vndms_card(disaster_events):
+    """Tạo tin nhắn Card chuyên biệt cho THIÊN TAI VNDMS"""
+    now_vn = (datetime.utcnow() + timedelta(hours=7)).strftime("%H:%M %d/%m/%Y")
+    badge = "🌀 <b>CẢNH BÁO THIÊN TAI (VNDMS)</b>"
     
-    disaster_events = data.get('disaster_events', [])
     event_details_text = ""
-    
     if disaster_events:
         for ev in disaster_events:
-            # Lấy chuẩn Key từ API VNDMS
             name = ev.get('title_vn') or ev.get('name_disaster') or "Áp thấp nhiệt đới trên biển Đông"
             level = ev.get('disaster_level') or ev.get('level') or "3"
             area = ev.get('vung_anhhuong') or ev.get('vunganhhuong') or "Khu vực Vịnh Bắc Bộ"
             link = ev.get('url_detail') or ev.get('link_detail') or "https://vndms.gov.vn/"
             direction = ev.get('huong_dichuyen') or ""
             
-            # Xử lý tóm tắt diễn biến
             raw_desc = ev.get('description') or ""
             clean_desc = re.sub(r'<[^>]+>', '', raw_desc).strip()
             desc_text = f"\n📝 <b>Diễn biến:</b> {clean_desc[:180]}..." if clean_desc else ""
             
-            event_details_text += f"🌀 <b>SỰ KIỆN:</b> {name}\n"
+            event_details_text += f"📌 <b>SỰ KIỆN:</b> {name}\n"
             event_details_text += f"⚠️ <b>Cấp độ rủi ro:</b> Cấp {level}\n"
             event_details_text += f"📍 <b>Khu vực ảnh hưởng:</b> {area}\n"
             if direction:
@@ -74,19 +70,36 @@ def generate_telegram_infographic(data):
             event_details_text += f"{desc_text}\n"
             event_details_text += f"🔗 <a href='{link}'>Xem chi tiết bản tin VNDMS</a>\n\n"
     else:
-        summary = data.get('summary', 'Chi tiết xem tại cổng thông tin KTTV.')
-        event_details_text = f"📍 <b>KHU VỰC:</b> {data.get('affected_area', 'Thanh Hóa')}\n"
-        event_details_text += f"⚠️ <b>RỦI RO:</b> {data.get('risk_level', 'Cấp 1 - 2')}\n"
-        event_details_text += f"📌 <b>NỘI DUNG:</b> {summary}\n"
+        event_details_text = "✅ <i>Hiện không ghi nhận sự kiện thiên tai nguy hiểm trên hệ thống VNDMS.</i>\n"
 
     msg = f"{badge}\n"
     msg += f"━━━━━━━━━━━━━━━━━━\n"
-    msg += f"📢 <b>{title.upper()}</b>\n"
-    msg += f"📅 <i>Cập nhật: {date}</i>\n\n"
+    msg += f"📅 <i>Cập nhật: {now_vn}</i>\n\n"
     msg += f"<blockquote>{event_details_text}</blockquote>\n\n"
-    msg += f"🌐 <i>Nguồn dữ liệu: kttv.thanhhoa.gov.vn | vndms.gov.vn</i>"
-
+    msg += f"🌐 <i>Nguồn dữ liệu: vndms.gov.vn</i>"
     return msg
+
+
+def generate_kttv_card(article):
+    """Tạo tin nhắn Card chuyên biệt cho BẢN TIN KTTV THANH HÓA"""
+    now_vn = (datetime.utcnow() + timedelta(hours=7)).strftime("%H:%M %d/%m/%Y")
+    is_thuy_van = 'thuy-van' in article.get('type', '')
+    badge = "🌊 <b>BẢN TIN THỦY VĂN THANH HÓA</b>" if is_thuy_van else "⚡ <b>BẢN TIN THỜI TIẾT THANH HÓA</b>"
+    
+    title = article.get('title', 'Bản tin cảnh báo KTTV Thanh Hóa')
+    url = article.get('url', 'https://kttv.thanhhoa.gov.vn')
+    
+    msg = f"{badge}\n"
+    msg += f"━━━━━━━━━━━━━━━━━━\n"
+    msg += f"📢 <b>{title.upper()}</b>\n"
+    msg += f"📅 <i>Cập nhật: {now_vn}</i>\n\n"
+    msg += f"<blockquote>"
+    msg += f"📍 <b>Phạm vi:</b> Địa bàn tỉnh Thanh Hóa\n"
+    msg += f"🔗 <b>Xem bản tin đầy đủ:</b> <a href='{url}'>{url}</a>\n"
+    msg += f"</blockquote>\n\n"
+    msg += f"🌐 <i>Nguồn: Đài KTTV Tỉnh Thanh Hóa</i>"
+    return msg
+
 
 # ==================== 2. CÀO BẢN TIN KTTV THANH HÓA ====================
 def scrape_kttv_thanhhoa():
@@ -204,7 +217,6 @@ def broadcast_alert(text):
 @app.route('/')
 def home():
     global LAST_ALERT_COUNT, PROCESSED_NEWS_URLS, LAST_DISASTER_COUNT
-    now_vn = (datetime.utcnow() + timedelta(hours=7)).strftime("%H:%M %d/%m/%Y")
     
     # A. Kiểm tra Dông Sét iWeather
     iweather_data = get_iweather_storm_warning("Thanh Hóa")
@@ -222,32 +234,18 @@ def home():
         elif not iweather_data.get("has_warning"):
             LAST_ALERT_COUNT = 0
 
-    # B. Kiểm tra VNDMS
+    # B. Kiểm tra VNDMS (Tách riêng thẻ VNDMS)
     disaster_data = get_vndms_disaster_events()
     if disaster_data.get("has_event") and disaster_data.get("count", 0) != LAST_DISASTER_COUNT:
-        info_data = {
-            'title': 'CẢNH BÁO THIÊN TAI TỰ ĐỘNG (VNDMS)',
-            'date': now_vn,
-            'disaster_events': disaster_data.get('events', [])
-        }
-        broadcast_alert(generate_telegram_infographic(info_data))
+        broadcast_alert(generate_vndms_card(disaster_data.get('events', [])))
         LAST_DISASTER_COUNT = disaster_data['count']
 
-    # C. Quét Bản tin mới KTTV Thanh Hóa
+    # C. Quét Bản tin mới KTTV Thanh Hóa (Tách riêng thẻ KTTV)
     articles = scrape_kttv_thanhhoa()
     for art in articles[:2]:
         if art['url'] not in PROCESSED_NEWS_URLS:
             PROCESSED_NEWS_URLS.add(art['url'])
-            info_data = {
-                'title': art['title'],
-                'type': art['type'],
-                'date': now_vn,
-                'risk_level': 'Cảnh báo rủi ro thiên tai KTTV.',
-                'affected_area': 'Địa bàn tỉnh Thanh Hóa.',
-                'summary': f"Bản tin chi tiết: <a href='{art['url']}'>{art['url']}</a>",
-                'disaster_events': disaster_data.get('events', [])
-            }
-            broadcast_alert(generate_telegram_infographic(info_data))
+            broadcast_alert(generate_kttv_card(art))
 
     return jsonify({
         "status": "running",
@@ -267,7 +265,7 @@ def telegram_webhook():
 
         save_chat(chat_id)
 
-        # 1. Lệnh /start hoặc /dong (Tổng hợp toàn bộ)
+        # 1. Lệnh /start hoặc /dong (Tra cứu tổng hợp - Trả về các thẻ riêng lẻ)
         if text.startswith("/start") or text.startswith("/dong"):
             send_telegram_message(chat_id, "⚡ Đang tra cứu Dông sét, Thiên tai VNDMS & Bản tin mới nhất...")
             
@@ -283,33 +281,30 @@ def telegram_webhook():
                     msg = f"✅ <b>AN TOÀN ({dw['updated_at']}):</b> Chưa phát hiện mây dông sét tại Thanh Hóa."
                 send_telegram_message(chat_id, msg)
 
-            # Quét VNDMS & Bản tin KTTV
+            # Quét và gửi Thẻ VNDMS riêng
             disaster_data = get_vndms_disaster_events()
+            if disaster_data.get("has_event"):
+                send_telegram_message(chat_id, generate_vndms_card(disaster_data.get('events', [])))
+
+            # Quét và gửi Thẻ KTTV Thanh Hóa riêng
             articles = scrape_kttv_thanhhoa()
-            top_art = articles[0] if articles else None
-            now_vn = (datetime.utcnow() + timedelta(hours=7)).strftime("%H:%M %d/%m/%Y")
+            if articles:
+                send_telegram_message(chat_id, generate_kttv_card(articles[0]))
 
-            info_data = {
-                'title': top_art['title'] if top_art else 'CẢNH BÁO THIÊN TAI HỆ THỐNG VNDMS',
-                'type': top_art['type'] if top_art else 'thoi-tiet',
-                'date': now_vn,
-                'summary': f"Chi tiết: <a href='{top_art['url']}'>{top_art['url']}</a>" if top_art else "",
-                'disaster_events': disaster_data.get('events', [])
-            }
-            send_telegram_message(chat_id, generate_telegram_infographic(info_data))
-
-        # 2. Lệnh /homnay hoặc /thientai (Chuyên tra cứu VNDMS)
+        # 2. Lệnh /thientai hoặc /homnay (Chỉ gửi thông tin VNDMS)
         elif text.startswith("/homnay") or text.startswith("/thientai"):
-            send_telegram_message(chat_id, "🔄 Đang quét dữ liệu mới nhất từ VNDMS...")
+            send_telegram_message(chat_id, "🔄 Đang quét dữ liệu thiên tai mới nhất từ VNDMS...")
             disaster_data = get_vndms_disaster_events()
-            now_vn = (datetime.utcnow() + timedelta(hours=7)).strftime("%H:%M %d/%m/%Y")
-            
-            info_data = {
-                'title': 'CẢNH BÁO THIÊN TAI HỆ THỐNG VNDMS',
-                'date': now_vn,
-                'disaster_events': disaster_data.get('events', [])
-            }
-            send_telegram_message(chat_id, generate_telegram_infographic(info_data))
+            send_telegram_message(chat_id, generate_vndms_card(disaster_data.get('events', [])))
+
+        # 3. Lệnh /kttv (Chỉ gửi bản tin KTTV Thanh Hóa mới nhất)
+        elif text.startswith("/kttv"):
+            send_telegram_message(chat_id, "📰 Đang quét bản tin mới nhất từ Đài KTTV Thanh Hóa...")
+            articles = scrape_kttv_thanhhoa()
+            if articles:
+                send_telegram_message(chat_id, generate_kttv_card(articles[0]))
+            else:
+                send_telegram_message(chat_id, "Chưa cào được bản tin mới từ kttv.thanhhoa.gov.vn")
 
     return "OK", 200
 
