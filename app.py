@@ -52,12 +52,14 @@ def generate_vndms_card(disaster_events):
     event_details_text = ""
     if disaster_events:
         for ev in disaster_events:
-            name = ev.get('title_vn') or ev.get('name_disaster') or "Áp thấp nhiệt đới trên biển Đông"
+            # BÓC TÁCH CHÍNH XÁC KEY TỪ DEVTOOLS: _vn, _detail, disaster_level
+            name = ev.get('_vn') or ev.get('title_vn') or ev.get('name_disaster') or "Áp thấp nhiệt đới trên biển Đông"
             level = ev.get('disaster_level') or ev.get('level') or "3"
             area = ev.get('vung_anhhuong') or ev.get('vunganhhuong') or "Khu vực Vịnh Bắc Bộ"
-            link = ev.get('url_detail') or ev.get('link_detail') or "https://vndms.gov.vn/"
-            direction = ev.get('huong_dichuyen') or ""
+            link = ev.get('_detail') or ev.get('url_detail') or "https://vndms.gov.vn/"
+            direction = ev.get('huong_dichuyen') or ev.get('_dichuyen') or ""
             
+            # Xử lý nội dung mô tả diễn biến
             raw_desc = ev.get('description') or ""
             clean_desc = re.sub(r'<[^>]+>', '', raw_desc).strip()
             desc_text = f"\n📝 <b>Diễn biến:</b> {clean_desc[:180]}..." if clean_desc else ""
@@ -170,7 +172,7 @@ def get_iweather_storm_warning(province_keyword="Thanh Hóa"):
 
 def get_vndms_disaster_events():
     headers = {
-        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)',
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
         'Referer': 'https://vndms.gov.vn/'
     }
     try:
@@ -178,10 +180,15 @@ def get_vndms_disaster_events():
         if res.status_code == 200:
             data = res.json()
             events = []
+            
             if isinstance(data, list):
                 events = data
             elif isinstance(data, dict):
-                events = data.get('data', []) or data.get('events', []) or data.get('items', [])
+                # Trường hợp API trả về mảng nằm trong 'data' hoặc chính là Object data
+                if 'data' in data and isinstance(data['data'], list):
+                    events = data['data']
+                else:
+                    events = [data] # Đóng gói Object lẻ thành mảng
 
             return {
                 "status": "success",
