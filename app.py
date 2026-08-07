@@ -94,27 +94,27 @@ def scrape_kttv_thanhhoa():
             if res.status_code == 200:
                 soup = BeautifulSoup(res.text, 'html.parser')
                 
-                # Báo KTTV Thanh Hóa thường để danh sách bài trong khối nội dung chính
-                # Tìm các thẻ chứa link bài viết có thuộc tính href chứa id/chi-tiet bài
-                links = soup.find_all('a', href=True)
+                # 1. Tìm khu vực chứa danh sách bài viết chính (bỏ qua menu/sidebar/tin nổi bật)
+                main_content = soup.find('div', class_=re.compile(r'(content|list|news|main)', re.I)) or soup
+                
+                # 2. Tìm tất cả các thẻ <a> trong vùng nội dung chính
+                links = main_content.find_all('a', href=True)
                 
                 for a in links:
                     href = a['href']
                     title = a.get_text(strip=True)
                     
-                    # Điều kiện lọc chuẩn:
-                    # 1. Tiêu đề phải đủ dài (tránh các nút 'Xem thêm', 'Trang chủ')
-                    # 2. Href chứa mã bài viết cụ thể (không phải là link chuyển trang /43 hay /46)
-                    # 3. Không nằm trên thanh Menu chính
-                    if title and len(title) > 25:
-                        if ('/tin-tuc/' in href or '/chi-tiet/' in href or '/thoi-tiet-' in href or '/thuy-van-' in href):
-                            # Bỏ qua link dẫn ngược lại trang danh mục tổng 43, 46
-                            if href.endswith('/43') or href.endswith('/46'):
+                    # 3. Lọc tiêu đề hợp lệ và tránh link trang danh mục tổng (/43, /46)
+                    if title and len(title) > 20:
+                        # Link bài viết chi tiết thường chứa ID dạng số hoặc slug bài
+                        if ('/chi-tiet/' in href or '/tin-tuc/' in href or '.html' in href or re.search(r'/\d+$', href)):
+                            # Bỏ qua link dẫn ngược lại trang danh mục tổng
+                            if href.endswith('/43') or href.endswith('/46') or href.endswith('/tin-tuc/thoi-tiet-nguy-hiem') or href.endswith('/tin-tuc/thuy-van-dac-biet'):
                                 continue
                                 
                             full_url = href if href.startswith('http') else f"https://kttv.thanhhoa.gov.vn{href}"
                             
-                            # Kiểm tra tránh trùng lặp bài viết
+                            # Tránh trùng lặp
                             if not any(item['url'] == full_url for item in articles):
                                 articles.append({
                                     'title': title,
