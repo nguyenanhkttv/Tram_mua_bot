@@ -41,35 +41,40 @@ LAST_ALERT_COUNT = 0
 PROCESSED_NEWS_URLS = set()
 LAST_DISASTER_COUNT = 0
 
-# ==================== 1. TẠO THẺ CẢNH BÁO TÁCH BIỆT ====================
+# ==================== 1. TẠO THẺ CẢNH BÁO TELEGRAM ====================
 
 def generate_vndms_card(disaster_events):
-    """Tạo tin nhắn Card chuyên biệt cho THIÊN TAI VNDMS (Khớp chính xác Key API)"""
+    """Tạo tin nhắn Card VNDMS bóc tách chuẩn 'Thông tin tóm tắt / Diễn biến'"""
     now_vn = (datetime.utcnow() + timedelta(hours=7)).strftime("%H:%M %d/%m/%Y")
     badge = "🌀 <b>CẢNH BÁO THIÊN TAI (VNDMS)</b>"
     
     event_details_text = ""
     if disaster_events:
         for ev in disaster_events:
-            # Bóc tách chính xác các Key từ DevTools: _vn, _detail, disaster_level
-            name = ev.get('_vn') or ev.get('title_vn') or ev.get('name_disaster') or "Áp thấp nhiệt đới trên biển Đông"
+            # 1. Bóc tách Key chuẩn từ API VNDMS
+            name = ev.get('title_vn') or ev.get('name_disaster') or "Áp thấp nhiệt đới trên biển Đông"
             level = ev.get('disaster_level') or ev.get('level') or "3"
-            area = ev.get('vung_anhhuong') or ev.get('vunganhhuong') or "Khu vực Vịnh Bắc Bộ"
-            link = ev.get('_detail') or ev.get('url_detail') or "https://vndms.gov.vn/"
-            direction = ev.get('huong_dichuyen') or ev.get('_dichuyen') or ""
+            area = ev.get('vung_anhhuong') or "Khu vực Vịnh Bắc Bộ"
+            link = ev.get('url_detail') or "https://vndms.gov.vn/"
+            direction = ev.get('huong_dichuyen') or ""
             
-            # Xử lý đoạn văn bản tóm tắt diễn biến
+            # 2. Xử lý bóc tách & làm sạch HTML trong 'description' (Thông tin tóm tắt)
             raw_desc = ev.get('description') or ""
-            clean_desc = re.sub(r'<[^>]+>', '', raw_desc).strip()
-            desc_text = f"\n📝 <b>Diễn biến:</b> {clean_desc[:200]}..." if clean_desc else ""
+            clean_desc = ""
+            if raw_desc:
+                # Dùng BeautifulSoup để chuyển <p>, <strong> thành text dòng mới sạch đẹp
+                soup = BeautifulSoup(raw_desc, 'html.parser')
+                clean_desc = soup.get_text(separator='\n').strip()
+            
+            desc_formatted = f"\n📝 <b>THÔNG TIN TÓM TẮT:</b>\n<i>{clean_desc}</i>\n" if clean_desc else ""
             
             event_details_text += f"📌 <b>SỰ KIỆN:</b> {name}\n"
             event_details_text += f"⚠️ <b>Cấp độ rủi ro:</b> Cấp {level}\n"
             event_details_text += f"📍 <b>Khu vực ảnh hưởng:</b> {area}\n"
             if direction:
                 event_details_text += f"🧭 <b>Hướng di chuyển:</b> Hướng {direction}\n"
-            event_details_text += f"{desc_text}\n"
-            event_details_text += f"🔗 <a href='{link}'>Xem chi tiết bản tin VNDMS</a>\n\n"
+            event_details_text += f"{desc_formatted}\n"
+            event_details_text += f"🔗 <a href='{link}'>Xem bản tin gốc chi tiết</a>\n\n"
     else:
         event_details_text = "✅ <i>Hiện không ghi nhận sự kiện thiên tai nguy hiểm trên hệ thống VNDMS.</i>\n"
 
@@ -170,7 +175,7 @@ def get_iweather_storm_warning(province_keyword="Thanh Hóa"):
         return {"status": "error", "message": str(e)}
 
 def get_vndms_disaster_events():
-    """Hàm lấy sự kiện VNDMS hỗ trợ bóc tách cả Object lẻ lẫn Mảng JSON"""
+    """Hàm lấy sự kiện VNDMS hỗ trợ bóc tách mảng JSON chuẩn"""
     headers = {
         'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
         'Referer': 'https://vndms.gov.vn/'
@@ -184,10 +189,7 @@ def get_vndms_disaster_events():
             if isinstance(data, list):
                 events = data
             elif isinstance(data, dict):
-                if 'data' in data and isinstance(data['data'], list):
-                    events = data['data']
-                else:
-                    events = [data]
+                events = data.get('data', []) or data.get('events', []) or [data]
 
             return {
                 "status": "success",
