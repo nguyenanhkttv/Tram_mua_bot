@@ -54,7 +54,18 @@ def generate_telegram_infographic(data):
     affected_area = data.get('affected_area', 'Địa bàn tỉnh Thanh Hóa.')
     summary = data.get('summary', '')
 
-    # Khối sự kiện thiên tai VNDMS
+    def generate_telegram_infographic(data):
+    """Tạo tin nhắn dạng Card Infographic bằng chuẩn Telegram HTML"""
+    is_thuy_van = "thuy-van" in data.get('type', '')
+    badge = "🌊 <b>CẢNH BÁO THỦY VĂN</b>" if is_thuy_van else "⚡ <b>CẢNH BÁO THỜI TIẾT</b>"
+    
+    title = data.get('title', 'BẢN TIN CẢNH BÁO THIÊN TAI & KTTV')
+    date = data.get('date', datetime.now().strftime("%H:%M %d/%m/%Y"))
+    risk_level = data.get('risk_level', 'Cấp 1 - 3. Theo dõi sát diễn biến.')
+    affected_area = data.get('affected_area', 'Vịnh Bắc Bộ & Tỉnh Thanh Hóa.')
+    summary = data.get('summary', '')
+
+    # Khối sự kiện thiên tai VNDMS - BÓC TÁCH CẢ TÓM TẮT DIỄN BIẾN
     disaster_text = ""
     disaster_events = data.get('disaster_events', [])
     if disaster_events:
@@ -63,9 +74,22 @@ def generate_telegram_infographic(data):
             name = ev.get('name_vn') or ev.get('Name') or "Thiên tai đang diễn ra"
             level = ev.get('disaster_level') or ev.get('Level') or "Cần theo dõi"
             area = ev.get('vung_anhhuong') or "Chưa xác định"
-            disaster_text += f"• <b>{name}</b> (Cấp {level})\n  📍 <i>Khu vực: {area}</i>\n"
+            
+            # 1. Lấy thông tin tóm tắt diễn biến từ VNDMS (Làm sạch thẻ HTML nếu có)
+            raw_desc = ev.get('description') or ""
+            # Sửa nhanh thẻ HTML thành text sạch/định dạng chuẩn
+            clean_desc = re.sub(r'<[^>]+>', '', raw_desc).strip()
+            desc_text = f"\n  📝 <i>Diễn biến:</i> {clean_desc[:150]}..." if clean_desc else ""
+            
+            # 2. Lấy link chi tiết
+            vndms_link = ev.get('link_detail') or ev.get('url_detail') or "https://vndms.gov.vn/"
+            
+            disaster_text += f"• <b>{name}</b> (Cấp Rủi Ro: {level})\n"
+            disaster_text += f"  📍 <i>Khu vực:</i> {area}"
+            disaster_text += f"{desc_text}\n"
+            disaster_text += f"  🔗 <a href='{vndms_link}'>Xem bản tin chi tiết VNDMS</a>\n"
 
-    # Định dạng khung Card dạng blockquote của Telegram
+    # Định dạng khung Card Telegram
     msg = f"{badge}\n"
     msg += f"━━━━━━━━━━━━━━━━━━\n"
     msg += f"📢 <b>{title.upper()}</b>\n"
@@ -75,9 +99,9 @@ def generate_telegram_infographic(data):
     msg += f"⚠️ <b>CẤP ĐỘ RỦI RO:</b>\n{risk_level}\n\n"
     msg += f"📍 <b>KHU VỰC ẢNH HƯỞNG:</b>\n{affected_area}\n"
     if summary:
-        msg += f"\n📌 <b>NỘI DUNG TÓM TẮT:</b>\n{summary}"
+        msg += f"\n📌 <b>GHI CHÚ / TÓM TẮT:</b>\n{summary}"
     msg += f"</blockquote>\n\n"
-    msg += f"🌐 <i>Đài KTTV Thanh Hóa | vndms.gov.vn</i>"
+    msg += f"🌐 <i>Nguồn dữ liệu: vndms.gov.vn</i>"
 
     return msg
 
