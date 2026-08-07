@@ -26,7 +26,7 @@ CHAT_FILE = "registered_chats.json"
 def load_chats():
     if os.path.exists(CHAT_FILE):
         try:
-            with open(CHAT_FILE, "r") as f:
+            with open(CHAT_FILE, "r", encoding="utf-8") as f:
                 return set(json.load(f))
         except Exception:
             return set()
@@ -36,7 +36,7 @@ def save_chat(chat_id):
     chats = load_chats()
     if chat_id not in chats:
         chats.add(chat_id)
-        with open(CHAT_FILE, "w") as f:
+        with open(CHAT_FILE, "w", encoding="utf-8") as f:
             json.dump(list(chats), f)
 
 LAST_ALERT_COUNT = 0
@@ -45,7 +45,7 @@ LAST_DISASTER_COUNT = 0
 
 # ==================== 1. TẠO INFOGRAPHIC HTML & RENDER ẢNH ====================
 def generate_infographic_html(data):
-    """Tạo HTML Infographic phong cách Glassmorphism Neon tích hợp sự kiện thiên tai"""
+    """Tạo HTML Infographic phong cách Glassmorphism Neon tích hợp sự kiện thiên tai VNDMS"""
     is_thuy_van = "thuy-van" in data.get('type', '')
     category_badge = "CẢNH BÁO THỦY VĂN" if is_thuy_van else "CẢNH BÁO THỜI TIẾT"
     bg_gradient = "linear-gradient(135deg, #0f2027 0%, #203a43 50%, #2c5364 100%)" if is_thuy_van else "linear-gradient(135deg, #1e130c 0%, #9a400e 50%, #e65c00 100%)"
@@ -57,15 +57,16 @@ def generate_infographic_html(data):
     affected_area = data.get('affected_area', 'Địa bàn tỉnh Thanh Hóa.')
     summary = data.get('summary', 'Chi tiết xem tại cổng thông tin Đài KTTV Thanh Hóa.')
 
-    # Khối hiển thị Sự kiện thiên tai VNDMS (nếu có)
+    # Khối hiển thị Sự kiện thiên tai VNDMS (Chuẩn key API)
     disaster_block = ""
     disaster_events = data.get('disaster_events', [])
     if disaster_events:
         event_items = ""
         for ev in disaster_events:
-            name = ev.get('Name') or ev.get('title') or "Sự kiện thiên tai đang diễn ra"
-            level = ev.get('Level') or ev.get('level') or "Đang theo dõi"
-            event_items += f"• 🌀 <b>{name}</b> (Cấp độ: {level})<br>"
+            name = ev.get('name_vn') or ev.get('Name') or ev.get('title') or "Sự kiện thiên tai đang diễn ra"
+            level = ev.get('disaster_level') or ev.get('Level') or ev.get('level') or "Cần theo dõi"
+            area = ev.get('vung_anhhuong') or "Chưa xác định"
+            event_items += f"• 🌀 <b>{name}</b> (Cấp Rủi Ro: {level})<br>&nbsp;&nbsp;&nbsp;&nbsp;📍 <i>Khu vực: {area}</i><br>"
             
         disaster_block = f"""
         <div class="info-box danger-event" style="margin-bottom: 15px; background: rgba(255, 71, 87, 0.25); border-left: 4px solid #ff4757; padding: 12px; border-radius: 10px;">
@@ -306,10 +307,13 @@ def home():
         msg = f"🌀 **CẢNH BÁO THIÊN TAI ĐANG DIỄN RA (VNDMS)!**\n"
         msg += f"📍 **Số sự kiện ghi nhận:** {disaster_data['count']}\n"
         for idx, ev in enumerate(disaster_data['events'], 1):
-            name = ev.get('Name') or ev.get('title') or "Sự kiện thiên tai"
-            level = ev.get('Level') or ev.get('level') or "Cần theo dõi"
-            msg += f"\n**{idx}.** {name} *(Cấp độ: {level})*"
-        msg += "\n\n🌐 Giám sát: https://vndms.gov.vn/"
+            name = ev.get('name_vn') or ev.get('Name') or ev.get('title') or "Sự kiện thiên tai"
+            level = ev.get('disaster_level') or ev.get('Level') or ev.get('level') or "Cần theo dõi"
+            area = ev.get('vung_anhhuong') or "Chưa xác định"
+            msg += f"\n**{idx}.** {name}"
+            msg += f"\n   ⚠️ *Cấp độ rủi ro:* Cấp {level}"
+            msg += f"\n   📍 *Khu vực:* {area}\n"
+        msg += "\n🌐 Giám sát: https://vndms.gov.vn/"
         broadcast_alert(text=msg)
         LAST_DISASTER_COUNT = disaster_data['count']
 
@@ -375,9 +379,10 @@ def telegram_webhook():
             if disaster_data.get("has_event"):
                 msg_dis = f"🌀 **SỰ KIỆN THIÊN TAI ĐANG DIỄN RA (VNDMS):**\n"
                 for idx, ev in enumerate(disaster_data['events'], 1):
-                    name = ev.get('Name') or ev.get('title') or "Thiên tai"
-                    level = ev.get('Level') or ev.get('level') or "Cần theo dõi"
-                    msg_dis += f"\n**{idx}.** {name} *(Cấp độ: {level})*"
+                    name = ev.get('name_vn') or ev.get('Name') or ev.get('title') or "Thiên tai"
+                    level = ev.get('disaster_level') or ev.get('Level') or ev.get('level') or "Cần theo dõi"
+                    area = ev.get('vung_anhhuong') or "Chưa xác định"
+                    msg_dis += f"\n**{idx}.** {name}\n   ⚠️ *Cấp độ rủi ro:* Cấp {level}\n   📍 *Khu vực:* {area}\n"
                 send_telegram_message(chat_id, msg_dis)
 
             # 3. Gửi Infographic bản tin mới nhất
