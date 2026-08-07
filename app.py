@@ -54,7 +54,7 @@ def generate_telegram_infographic(data):
     affected_area = data.get('affected_area', 'Địa bàn tỉnh Thanh Hóa.')
     summary = data.get('summary', '')
 
-    def generate_telegram_infographic(data):
+def generate_telegram_infographic(data):
     """Tạo tin nhắn dạng Card Infographic bằng chuẩn Telegram HTML"""
     is_thuy_van = "thuy-van" in data.get('type', '')
     badge = "🌊 <b>CẢNH BÁO THỦY VĂN</b>" if is_thuy_van else "⚡ <b>CẢNH BÁO THỜI TIẾT</b>"
