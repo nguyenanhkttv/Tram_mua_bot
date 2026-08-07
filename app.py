@@ -323,8 +323,8 @@ def telegram_webhook():
                 }
                 infographic_msg = generate_telegram_infographic(info_data)
                 send_telegram_message(chat_id, infographic_msg)
-            # Lệnh tra cứu nhanh tin tức VNDMS hôm nay
-            if text.startswith("/homnay") or text.startswith("/thientai"):
+            # 4. Lệnh tra cứu nhanh tin tức VNDMS hôm nay
+        if text.startswith("/homnay") or text.startswith("/thientai"):
             send_telegram_message(chat_id, "🔄 Đang quét dữ liệu mới nhất từ VNDMS...")
             
             disaster_data = get_vndms_disaster_events()
