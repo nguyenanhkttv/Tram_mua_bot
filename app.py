@@ -323,7 +323,31 @@ def telegram_webhook():
                 }
                 infographic_msg = generate_telegram_infographic(info_data)
                 send_telegram_message(chat_id, infographic_msg)
-
+            # 4. Lệnh tra cứu nhanh tin tức hôm nay
+            if text.startswith("/homnay"):
+                send_telegram_message(chat_id, "🔄 Đang quét dữ liệu mới nhất hôm nay (07/08/2026)...")
+            
+            disaster_data = get_vndms_disaster_events()
+            articles = scrape_kttv_thanhhoa()
+            
+            now_vn = (datetime.utcnow() + timedelta(hours=7)).strftime("%H:%M %d/%m/%Y")
+            
+            top_title = articles[0]['title'] if articles else "BẢN TIN CẢNH BÁO THỜI TIẾT THANH HÓA"
+            top_url = articles[0]['url'] if articles else "https://kttv.thanhhoa.gov.vn"
+            
+            info_data = {
+                'title': top_title,
+                'type': 'thoi-tiet',
+                'date': now_vn,
+                'risk_level': 'Cảnh báo rủi ro thiên tai Cấp 1 - 3.',
+                'affected_area': 'Vịnh Bắc Bộ & Tỉnh Thanh Hóa.',
+                'summary': f"Chi tiết bản tin: <a href='{top_url}'>{top_url}</a>",
+                'disaster_events': disaster_data.get('events', [])
+            }
+            
+            msg_today = generate_telegram_infographic(info_data)
+            send_telegram_message(chat_id, msg_today)
+            
     return "OK", 200
 
 if __name__ == "__main__":
