@@ -109,8 +109,21 @@ def get_vndms_disaster_events():
                 soup = BeautifulSoup(raw_desc, 'html.parser')
                 clean_desc = soup.get_text(separator="\n", strip=True) if raw_desc else ""
                 
+                # Tự động chọn Icon phù hợp theo loại thiên tai
+                event_name = ev.get('name_vn') or ev.get('Name') or "Sự kiện thiên tai"
+                icon = "🌀" # Mặc định bão/áp thấp
+                if any(k in event_name.lower() for k in ['mưa', 'mưa lớn', 'ngập']):
+                    icon = "🌧️"
+                elif any(k in event_name.lower() for k in ['lũ', 'ngập lụt', 'thủy văn']):
+                    icon = "🌊"
+                elif any(k in event_name.lower() for k in ['sạt lở', 'đất', 'lũ quét']):
+                    icon = "⛰️"
+                elif any(k in event_name.lower() for k in ['nắng nóng', 'cháy rừng']):
+                    icon = "☀️"
+                
                 parsed_events.append({
-                    'name': ev.get('name_vn') or ev.get('Name') or "Thiên tai đang diễn ra",
+                    'icon': icon,
+                    'name': event_name,
                     'level': ev.get('disaster_level') or ev.get('Level') or "Cần theo dõi",
                     'area': ev.get('vung_anhhuong') or "Chưa xác định",
                     'description': clean_desc,
@@ -130,20 +143,20 @@ def get_vndms_disaster_events():
 
 def format_vndms_message(vndms_data):
     now_vn = (datetime.utcnow() + timedelta(hours=7)).strftime("%H:%M %d/%m/%Y")
-    msg = f"🌀 <b>CẢNH BÁO THIÊN TAI ĐANG DIỄN RA (VNDMS)</b>\n"
+    msg = f"⚠️ <b>CẢNH BÁO THIÊN TAI ĐANG DIỄN RA (VNDMS)</b>\n"
     msg += f"🕒 <i>Cập nhật: {now_vn}</i>\n"
     msg += f"━━━━━━━━━━━━━━━━━━\n\n"
     
     for ev in vndms_data['events']:
-        msg += f"📌 <b>{ev['name'].upper()}</b>\n"
+        msg += f"{ev['icon']} <b>{ev['name'].upper()}</b>\n"
         msg += f"⚠️ <b>Cấp độ rủi ro:</b> Cấp {ev['level']}\n"
         msg += f"📍 <b>Khu vực ảnh hưởng:</b> {ev['area']}\n"
         if ev['description']:
-            msg += f"\n📋 <b>TÓM TẮT DIỄN BIẾN:</b>\n<i>{ev['description']}</i>\n"
+            # Lấy 300 ký tự đầu của phần mô tả diễn biến
+            msg += f"\n📋 <b>TÓM TẮT DIỄN BIẾN:</b>\n<i>{ev['description'][:300]}...</i>\n"
         msg += f"\n🔗 <a href='{ev['link']}'>Xem chi tiết bản tin trên VNDMS</a>\n\n"
         
     return msg
-
 # ==================== 3. PHẦN KTTV THANH HÓA (/43 & /46) ====================
 def scrape_kttv_thanhhoa():
     articles = []
