@@ -84,24 +84,43 @@ def generate_telegram_infographic(data):
 # ==================== 2. CÀO BẢN TIN KTTV THANH HÓA ====================
 def scrape_kttv_thanhhoa():
     articles = []
-    headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)'}
+    headers = {
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
+    }
     
     for url in KTTV_URLS:
         try:
             res = requests.get(url, headers=headers, timeout=10)
             if res.status_code == 200:
                 soup = BeautifulSoup(res.text, 'html.parser')
+                
+                # Báo KTTV Thanh Hóa thường để danh sách bài trong khối nội dung chính
+                # Tìm các thẻ chứa link bài viết có thuộc tính href chứa id/chi-tiet bài
                 links = soup.find_all('a', href=True)
+                
                 for a in links:
                     href = a['href']
                     title = a.get_text(strip=True)
-                    if title and len(title) > 18 and ('tin-tuc' in href or 'chi-tiet' in href or '/43' in href or '/46' in href):
-                        full_url = href if href.startswith('http') else f"https://kttv.thanhhoa.gov.vn{href}"
-                        articles.append({
-                            'title': title,
-                            'url': full_url,
-                            'type': 'thuy-van' if 'thuy-van' in url else 'thoi-tiet'
-                        })
+                    
+                    # Điều kiện lọc chuẩn:
+                    # 1. Tiêu đề phải đủ dài (tránh các nút 'Xem thêm', 'Trang chủ')
+                    # 2. Href chứa mã bài viết cụ thể (không phải là link chuyển trang /43 hay /46)
+                    # 3. Không nằm trên thanh Menu chính
+                    if title and len(title) > 25:
+                        if ('/tin-tuc/' in href or '/chi-tiet/' in href or '/thoi-tiet-' in href or '/thuy-van-' in href):
+                            # Bỏ qua link dẫn ngược lại trang danh mục tổng 43, 46
+                            if href.endswith('/43') or href.endswith('/46'):
+                                continue
+                                
+                            full_url = href if href.startswith('http') else f"https://kttv.thanhhoa.gov.vn{href}"
+                            
+                            # Kiểm tra tránh trùng lặp bài viết
+                            if not any(item['url'] == full_url for item in articles):
+                                articles.append({
+                                    'title': title,
+                                    'url': full_url,
+                                    'type': 'thuy-van' if '46' in url or 'thuy-van' in url else 'thoi-tiet'
+                                })
         except Exception as e:
             print(f"Lỗi cào dữ liệu từ {url}: {e}")
             
