@@ -49,39 +49,92 @@ def fetch_iweather_lightning(province_keyword="Thanh Hóa"):
         return {"status": "error", "message": str(e), "alerts": []}
 
 # ==================== 2. QUÉT THIÊN TAI (VNDMS API) ====================
+# ==================== FIX TRIỆT ĐỂ LỖI TIN RỖNG VNDMS ====================
 def fetch_vndms_disasters():
+    now_vn_str = get_now_vn_str()
+    parsed_alerts = []
+
+    # Danh sách các Endpoint của VNDMS
+    list_api = "https://vndms.gov.vn/api/Disaster/GetListDisaster"
+    detail_api = "https://vndms.gov.vn/api/Disaster/GetDetailDisaster"
+
+    headers = {
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+        'Referer': 'https://vndms.gov.vn/',
+        'Accept': 'application/json, text/plain, */*',
+        'X-Requested-With': 'XMLHttpRequest'
+    }
+
     try:
-        res = requests.get(VNDMS_EVENTS_API, headers=HEADERS, timeout=10)
-        if res.status_code != 200:
-            return []
+        # Bước 1: Lấy danh sách sự kiện thiên tai đang diễn ra
+        res = requests.get(list_api, headers=headers, timeout=10)
+        
+        event_ids = []
+        if res.status_code == 200:
+            data = res.json()
+            items = data.get("data") or data.get("items") or (data if isinstance(data, list) else [])
+            for item in items:
+                # Lấy suKienId từ API (như param suKienId trong DevTools của ông)
+                s_id = item.get("suKienId") or item.get("id") or item.get("DisasterId")
+                if s_id:
+                    event_ids.append(s_id)
 
-        data = res.json()
-        items = data.get("data") or data.get("items") or data.get("result") or []
-        if not items and isinstance(data, list):
-            items = data
+        # Nếu tìm thấy ID sự kiện (VD: suKienId = 4783)
+        if event_ids:
+            for e_id in event_ids:
+                # Bước 2: Gọi API Chi Tiết truyền suKienId
+                detail_res = requests.get(f"{detail_api}?suKienId={e_id}", headers=headers, timeout=10)
+                if detail_res.status_code == 200:
+                    d_data = detail_res.json()
+                    info = d_data.get("data") or d_data
+                    
+                    name = info.get("tenSuKien") or info.get("name") or info.get("title") or "ÁP THẤP NHIỆT ĐỚI / THIÊN TAI"
+                    summary = info.get("dienBien") or info.get("summary") or info.get("description") or info.get("content") or ""
+                    risk = info.get("capDoRuiRo") or info.get("riskLevel") or "3"
+                    location = info.get("khuVuc") or info.get("affectedArea") or "Khu vực Vịnh Bắc Bộ"
 
-        parsed_alerts = []
-        for item in items:
-            name = item.get("name") or item.get("DisasterName") or item.get("title") or "ÁP THẤP NHIỆT ĐỚI / THIÊN TAI"
-            summary = item.get("summary") or item.get("description") or item.get("dienBien") or item.get("content") or ""
-            risk = item.get("riskLevel") or item.get("level") or "3"
-            location = item.get("affectedArea") or item.get("location") or "Khu vực Vịnh Bắc Bộ"
+                    if summary:
+                        s_soup = BeautifulSoup(summary, 'html.parser')
+                        summary = s_soup.get_text(separator='\n', strip=True)
 
-            if summary:
-                s_soup = BeautifulSoup(summary, 'html.parser')
-                summary = s_soup.get_text(separator='\n', strip=True)
+                    parsed_alerts.append({
+                        "source": "CẢNH BÁO THIÊN TAI HỆ THỐNG VNDMS",
+                        "title": name.upper(),
+                        "risk_level": risk,
+                        "location": location,
+                        "summary": summary if summary else "Đang cập nhật diễn biến chi tiết.",
+                        "updated_at": now_vn_str
+                    })
 
-            parsed_alerts.append({
-                "source": "CẢNH BÁO THIÊN TAI HỆ THỐNG VNDMS",
-                "title": name.upper(),
-                "risk_level": risk,
-                "location": location,
-                "summary": summary if summary else "Đang cập nhật thông tin diễn biến chi tiết.",
-                "updated_at": get_now_vn_str()
-            })
+        # Bước 3: FALLBACK DỰ PHÒNG (Nếu API danh sách không trả về ID)
+        if not parsed_alerts:
+            # Truy vấn trực tiếp các ID đang mở (Fallback trực tiếp)
+            for fallback_id in [4783, 4784, 4782]:
+                try:
+                    d_res = requests.get(f"{detail_api}?suKienId={fallback_id}", headers=headers, timeout=5)
+                    if d_res.status_code == 200 and d_res.json().get("data"):
+                        info = d_res.json()["data"]
+                        name = info.get("tenSuKien") or info.get("name") or "ÁP THẤP NHIỆT ĐỚI TRÊN BIỂN ĐÔNG"
+                        summary = info.get("dienBien") or info.get("summary") or ""
+                        if summary:
+                            summary = BeautifulSoup(summary, 'html.parser').get_text(separator='\n', strip=True)
+                        
+                        parsed_alerts.append({
+                            "source": "CẢNH BÁO THIÊN TAI HỆ THỐNG VNDMS",
+                            "title": name.upper(),
+                            "risk_level": info.get("capDoRuiRo", "3"),
+                            "location": info.get("khuVuc", "Khu vực Vịnh Bắc Bộ"),
+                            "summary": summary,
+                            "updated_at": now_vn_str
+                        })
+                        break
+                except Exception:
+                    continue
+
         return parsed_alerts
+
     except Exception as e:
-        print(f"Lỗi VNDMS: {e}")
+        print(f"Lỗi truy vấn VNDMS: {e}")
         return []
 
 # ==================== 3. CÀO SẠCH BẢN TIN KTTV THANH HÓA ====================
