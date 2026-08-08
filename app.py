@@ -7,27 +7,137 @@ from flask import Flask, request, jsonify, render_template_string
 
 # ==================== CẤU HÌNH ENDPOINTS ====================
 IWEATHER_STORM_URL = "https://iweather.gov.vn/product/warningstorm?token=null"
-VNDMS_LIST_API = "https://vndms.gov.vn/api/Disaster/GetListDisaster"
-VNDMS_DETAIL_API = "https://vndms.gov.vn/api/Disaster/GetDetailDisaster"
+VNDMS_EVENTS_API = "https://vndms.gov.vn/api/Disaster/GetListDisaster"
 
-KTTV_TH_DANGEROUS_WEATHER = "https://kttv.thanhhoa.gov.vn/tin-tuc/thoi-tiet-nguy-hiem/43"
-KTTV_TH_SPECIAL_HYDROLOGY = "https://kttv.thanhhoa.gov.vn/tin-tuc/thuy-van-dac-biet/46"
-KTTV_BASE_URL = "https://kttv.thanhhoa.gov.vn"
+# URL 2 mục chuyên biệt trên kttvthanhhoa.gov.vn
+KTTV_TH_TTNGUYHIEM = "https://kttvthanhhoa.gov.vn/thoi-tiet-nguy-hiem"
+KTTV_TH_THUYVANDACBIET = "https://kttvthanhhoa.gov.vn/thuy-van-dac-biet"
 
 TELEGRAM_BOT_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN", "8587075816:AAHlm9r7mwCjEQlgmx6KjoZ8AE7Vd844x6s")
 TELEGRAM_API_URL = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}"
 
 app = Flask(__name__)
-
 REGISTERED_CHATS = set()
-LAST_ALERT_COUNT = 0
-PROCESSED_VNDMS_IDS = set()
-PROCESSED_KTTV_URLS = set()
 
 HEADERS = {
     'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-    'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8'
+    'Accept': 'application/json, text/html, */*'
 }
+
+def get_now_vn_str():
+    return (datetime.utcnow() + timedelta(hours=7)).strftime("%H:%M %d/%m/%Y")
+
+# ==================== 1. QUÉT DÔNG SẾT (iWeather) ====================
+def fetch_iweather_lightning(province_keyword="Thanh Hóa"):
+    try:
+        res = requests.get(IWEATHER_STORM_URL, headers=HEADERS, timeout=10)
+        if res.status_code != 200:
+            return {"status": "error", "alerts": []}
+            
+        pattern = r'([^"\[\]\\]+?Tỉnh Thanh Hoá|[^"\[\]\\]+?Tỉnh Thanh Hóa)'
+        matches = re.findall(pattern, res.text, re.IGNORECASE)
+        unique_locs = list(set([m.strip(' ",') for m in matches]))
+        
+        alerts = [{"location": loc} for loc in unique_locs]
+        return {
+            "status": "success",
+            "has_lightning": len(alerts) > 0,
+            "alerts": alerts,
+            "updated_at": get_now_vn_str()
+        }
+    except Exception as e:
+        return {"status": "error", "message": str(e), "alerts": []}
+
+# ==================== 2. QUÉT THIÊN TAI (VNDMS API) ====================
+def fetch_vndms_disasters():
+    try:
+        res = requests.get(VNDMS_EVENTS_API, headers=HEADERS, timeout=10)
+        if res.status_code != 200:
+            return []
+
+        data = res.json()
+        items = data.get("data") or data.get("items") or data.get("result") or []
+        if not items and isinstance(data, list):
+            items = data
+
+        parsed_alerts = []
+        for item in items:
+            name = item.get("name") or item.get("DisasterName") or item.get("title") or "ÁP THẤP NHIỆT ĐỚI / THIÊN TAI"
+            summary = item.get("summary") or item.get("description") or item.get("dienBien") or item.get("content") or ""
+            risk = item.get("riskLevel") or item.get("level") or "3"
+            location = item.get("affectedArea") or item.get("location") or "Khu vực Vịnh Bắc Bộ"
+
+            if summary:
+                s_soup = BeautifulSoup(summary, 'html.parser')
+                summary = s_soup.get_text(separator='\n', strip=True)
+
+            parsed_alerts.append({
+                "source": "CẢNH BÁO THIÊN TAI HỆ THỐNG VNDMS",
+                "title": name.upper(),
+                "risk_level": risk,
+                "location": location,
+                "summary": summary if summary else "Đang cập nhật thông tin diễn biến chi tiết.",
+                "updated_at": get_now_vn_str()
+            })
+        return parsed_alerts
+    except Exception as e:
+        print(f"Lỗi VNDMS: {e}")
+        return []
+
+# ==================== 3. CÀO SẠCH BẢN TIN KTTV THANH HÓA ====================
+def fetch_kttv_thanhhoa_article(category_url, category_name):
+    try:
+        res = requests.get(category_url, headers=HEADERS, timeout=10)
+        res.encoding = 'utf-8'
+        if res.status_code != 200:
+            return None
+
+        soup = BeautifulSoup(res.text, 'html.parser')
+        
+        # Lấy link bài viết mới nhất trong danh mục
+        first_news = soup.select_one('.news-item a, .post-item a, article a, .list-news a')
+        detail_url = first_news['href'] if first_news and 'href' in first_news.attrs else category_url
+        if not detail_url.startswith('http'):
+            detail_url = "https://kttvthanhhoa.gov.vn" + detail_url
+
+        # Tải trang chi tiết bài viết
+        d_res = requests.get(detail_url, headers=HEADERS, timeout=10)
+        d_res.encoding = 'utf-8'
+        d_soup = BeautifulSoup(d_res.text, 'html.parser')
+
+        # LOẠI BỎ TRIỆT ĐỂ RÁC TRÊN WEB (Menu, sidebar, footer, tin liên quan...)
+        for trash in d_soup.find_all(['nav', 'header', 'footer', 'sidebar', 'script', 'style', 'form', 'aside']):
+            trash.decompose()
+            
+        for trash_class in d_soup.select('.related-news, .sidebar, .menu, .footer, .header, .search-box'):
+            trash_class.decompose()
+
+        # Trích xuất tiêu đề
+        title_elem = d_soup.find('h1') or d_soup.find('h2') or d_soup.select_one('.title-detail, .news-title')
+        title = title_elem.get_text(strip=True) if title_elem else f"BẢN TIN {category_name.upper()}"
+
+        # Trích xuất nội dung văn bản chính
+        content_div = d_soup.select_one('.content-detail, .news-content, .detail-content, #content, .post-content')
+        if content_div:
+            paragraphs = [p.get_text(strip=True) for p in content_div.find_all(['p', 'div']) if len(p.get_text(strip=True)) > 20]
+            clean_content = "\n\n".join(paragraphs[:6])
+        else:
+            # Fallback lấy text sạch nếu không tìm thấy div content
+            clean_content = d_soup.get_text(separator='\n', strip=True)
+            lines = [line.strip() for line in clean_content.split('\n') if len(line.strip()) > 30]
+            clean_content = "\n\n".join(lines[:6])
+
+        return {
+            "source": "ĐÀI KTTV TỈNH THANH HÓA",
+            "category": category_name,
+            "title": title,
+            "location": "Tỉnh Thanh Hóa",
+            "summary": clean_content if clean_content else "Chi tiết bản tin đang được cập nhật.",
+            "updated_at": get_now_vn_str()
+        }
+    except Exception as e:
+        print(f"Lỗi cào KTTV Thanh Hóa ({category_name}): {e}")
+        return None
 
 # ==================== HTML INFOGRAPHIC TEMPLATE ====================
 INFOGRAPHIC_TEMPLATE = """
@@ -36,330 +146,170 @@ INFOGRAPHIC_TEMPLATE = """
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Infographic Cảnh Báo Thời Tiết & Thiên Tai</title>
+    <title>Infographic Cảnh Báo Thời Tiết</title>
     <style>
-        body { font-family: 'Segoe UI', Arial, sans-serif; background: #0f172a; color: #ffffff; margin: 0; padding: 20px; display: flex; justify-content: center; }
-        .card { background: {{ theme.bg }}; border: 2px solid {{ theme.border }}; border-radius: 20px; padding: 25px; width: 100%; max-width: 650px; box-shadow: 0 10px 30px rgba(0, 0, 0, 0.6); backdrop-filter: blur(10px); }
-        .header { display: flex; align-items: center; justify-content: space-between; border-bottom: 2px solid rgba(255, 255, 255, 0.15); padding-bottom: 12px; margin-bottom: 15px; }
-        .brand { font-size: 13px; font-weight: bold; letter-spacing: 1.2px; color: #cbd5e1; text-transform: uppercase; }
-        .disaster-title { font-size: 20px; font-weight: 800; color: {{ theme.title_color }}; margin: 10px 0; text-transform: uppercase; line-height: 1.4; }
-        .badge-source { background: {{ theme.badge_bg }}; color: #ffffff; padding: 5px 14px; border-radius: 20px; font-size: 12px; font-weight: bold; display: inline-block; }
-        .grid-info { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; margin: 15px 0; background: rgba(0, 0, 0, 0.25); padding: 12px; border-radius: 10px; }
-        .grid-item { font-size: 13px; }
-        .grid-item label { display: block; color: #94a3b8; font-size: 11px; margin-bottom: 2px; text-transform: uppercase; }
-        .grid-item strong { color: #f8fafc; font-size: 13px; }
-        .content-box { background: rgba(255, 255, 255, 0.05); border-left: 4px solid {{ theme.border }}; padding: 15px; border-radius: 8px; font-size: 13.5px; line-height: 1.6; white-space: pre-wrap; word-wrap: break-word; max-height: 450px; overflow-y: auto; }
-        .footer { margin-top: 18px; display: flex; justify-content: space-between; font-size: 11px; color: #64748b; border-top: 1px solid rgba(255, 255, 255, 0.1); padding-top: 10px; }
+        * { box-sizing: border-box; margin: 0; padding: 0; }
+        body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif; background: #0b132b; color: #ffffff; display: flex; justify-content: center; align-items: center; min-height: 100vh; padding: 20px; }
+        .card { background: linear-gradient(145deg, #1c2541, #0b132b); border: 2px solid #5bc0be; border-radius: 20px; padding: 30px; max-width: 650px; width: 100%; box-shadow: 0 15px 30px rgba(0,0,0,0.6); position: relative; overflow: hidden; }
+        .card::before { content: ""; position: absolute; top: 0; left: 0; width: 100%; height: 6px; background: linear-gradient(90deg, #ff0055, #ff5400, #ffbd00); }
+        .top-bar { display: flex; justify-content: space-between; align-items: center; margin-bottom: 20px; border-bottom: 1px solid rgba(255,255,255,0.1); padding-bottom: 12px; }
+        .source-badge { background: #ff0055; color: #fff; padding: 6px 14px; border-radius: 30px; font-weight: bold; font-size: 13px; text-transform: uppercase; letter-spacing: 0.5px; }
+        .chat-id { font-size: 12px; color: #6fffe9; background: rgba(111,255,233,0.1); padding: 4px 10px; border-radius: 8px; border: 1px solid rgba(111,255,233,0.3); }
+        .main-title { color: #6fffe9; font-size: 22px; font-weight: 800; margin-bottom: 15px; line-height: 1.4; }
+        .meta-box { background: rgba(255, 255, 255, 0.05); border-left: 4px solid #ffbd00; padding: 12px 16px; border-radius: 6px; margin-bottom: 20px; font-size: 14px; line-height: 1.8; }
+        .meta-box strong { color: #ffbd00; }
+        .content-box { background: rgba(0, 0, 0, 0.2); padding: 18px; border-radius: 12px; font-size: 15px; line-height: 1.7; color: #e0e1dd; white-space: pre-line; border: 1px solid rgba(255,255,255,0.05); }
+        .footer { margin-top: 25px; display: flex; justify-content: space-between; align-items: center; font-size: 12px; color: #a3cef1; border-top: 1px solid rgba(255,255,255,0.1); padding-top: 12px; }
     </style>
 </head>
 <body>
     <div class="card">
-        <div class="header">
-            <div class="brand">{{ alert.source_name }}</div>
-            <div class="badge-source">📍 {{ alert.location }}</div>
+        <div class="top-bar">
+            <span class="source-badge">📢 {{ data.source }}</span>
+            <span class="chat-id">👤 Chat ID: {{ chat_id }}</span>
         </div>
-        <div class="disaster-title">{{ theme.icon }} {{ alert.title }}</div>
-        <div class="grid-info">
-            <div class="grid-item"><label>📍 PHẠM VI/KHU VỰC</label><strong>{{ alert.location }}</strong></div>
-            <div class="grid-item"><label>🕒 THỜI GIAN PHÁT TIN</label><strong>{{ alert.time }}</strong></div>
-            <div class="grid-item"><label>🏷 LOẠI BẢN TIN</label><strong>{{ alert.category }}</strong></div>
-            <div class="grid-item"><label>📡 NGUỒN TRUY XUẤT</label><strong>{{ alert.domain }}</strong></div>
+
+        <div class="main-title">⚡ {{ data.title }}</div>
+
+        <div class="meta-box">
+            {% if data.category %}<div><strong>🏷 Danh mục:</strong> {{ data.category }}</div>{% endif %}
+            {% if data.risk_level %}<div><strong>⚠️ Cấp độ rủi ro:</strong> Cấp {{ data.risk_level }}</div>{% endif %}
+            <div><strong>📍 Khu vực:</strong> {{ data.location }}</div>
+            <div><strong>📅 Cập nhật:</strong> {{ data.updated_at }}</div>
         </div>
+
         <div class="content-box">
-            <strong style="color: {{ theme.title_color }}; display: block; margin-bottom: 8px;">📋 NỘI DUNG CHI TIẾT BẢN TIN:</strong>
-            {{ alert.content }}
+            <div style="font-weight: bold; margin-bottom: 8px; color: #5bc0be;">📋 NỘI DUNG BẢN TIN / DIỄN BIẾN:</div>
+            {{ data.summary }}
         </div>
+
         <div class="footer">
-            <span>Thời gian quét: {{ updated_at }}</span>
-            <span>Cơ quan Quản lý Khí tượng Thủy văn & PCTT</span>
+            <span>Hệ thống Cảnh báo Thiên tai & Thời tiết Auto Bot</span>
+            <span>https://vndms.gov.vn</span>
         </div>
     </div>
 </body>
 </html>
 """
 
-def get_disaster_theme(title, category=""):
-    t = (title + " " + category).lower()
-    if any(k in t for k in ["bão", "áp thấp"]):
-        return {"icon": "🌀", "bg": "linear-gradient(135deg, #1e1b4b, #311b92)", "border": "#7c3aed", "title_color": "#a78bfa", "badge_bg": "#dc2626"}
-    elif any(k in t for k in ["thủy văn", "lũ", "ngập", "triều cường", "sông"]):
-        return {"icon": "🌊", "bg": "linear-gradient(135deg, #022c22, #065f46)", "border": "#34d399", "title_color": "#6ee7b7", "badge_bg": "#059669"}
-    elif any(k in t for k in ["mưa", "mưa lớn", "dông"]):
-        return {"icon": "🌧", "bg": "linear-gradient(135deg, #0c4a6e, #0369a1)", "border": "#38bdf8", "title_color": "#7dd3fc", "badge_bg": "#0284c7"}
-    elif any(k in t for k in ["sạt lở", "lũ quét"]):
-        return {"icon": "🏔", "bg": "linear-gradient(135deg, #3f2c20, #573823)", "border": "#f59e0b", "title_color": "#fcd34d", "badge_bg": "#d97706"}
-    else:
-        return {"icon": "⚠️", "bg": "linear-gradient(135deg, #1f2937, #111827)", "border": "#ef4444", "title_color": "#fca5a5", "badge_bg": "#dc2626"}
+# ==================== FORMAT MẪU TIN NHẮN TELEGRAM ====================
+def format_lightning_msg(data, chat_id):
+    msg = f"⚡ **CẢNH BÁO DÔNG SÉT  (iWeather Radar)**\n━━━━━━━━━━━━━━━━━━\n"
+    msg += f"👤 *Chat ID:* `{chat_id}`\n"
+    msg += f"🕒 *Cập nhật:* {data['updated_at']}\n"
+    msg += f"📍 **Phát hiện {len(data['alerts'])} khu vực mây đối lưu/dông sét tại Thanh Hóa:**\n"
+    for idx, item in enumerate(data['alerts'], 1):
+        msg += f"\n**{idx}.** {item['location']}"
+    msg += "\n\n🌐 [Xem trực quan Radar Dông Sét](https://iweather.gov.vn/dashboard?areaRadar=COM&productRadar=CMAX)"
+    return msg
 
-# ==================== CÀO KTTV THANH HÓA ====================
-def scrape_kttv_thanhhoa_category(url, category_name):
-    now_vn = datetime.utcnow() + timedelta(hours=7)
-    articles = []
-    try:
-        res = requests.get(url, headers=HEADERS, timeout=12)
-        if res.status_code != 200: return articles
-        soup = BeautifulSoup(res.text, 'html.parser')
-        news_items = soup.find_all('a', href=True)
-        valid_links = []
-        for a in news_items:
-            href = a['href']
-            if '/tin-tuc/' in href and href not in valid_links and href != url:
-                if not href.startswith('http'): href = KTTV_BASE_URL + href
-                valid_links.append(href)
-
-        for link in valid_links[:3]:
-            try:
-                art_res = requests.get(link, headers=HEADERS, timeout=10)
-                if art_res.status_code == 200:
-                    art_soup = BeautifulSoup(art_res.text, 'html.parser')
-                    title_elem = art_soup.find('h1') or art_soup.find('h2') or art_soup.find('div', class_='title')
-                    title = title_elem.get_text(strip=True) if title_elem else "CẢNH BÁO KTTV THANH HÓA"
-                    time_elem = art_soup.find('span', class_='date') or art_soup.find('div', class_='date')
-                    pub_time = time_elem.get_text(strip=True) if time_elem else now_vn.strftime('%H:%M %d/%m/%Y')
-
-                    content_elem = art_soup.find('div', class_='content') or art_soup.find('div', class_='detail-content') or art_soup.find('article')
-                    if content_elem:
-                        for br in content_elem.find_all("br"): br.replace_with("\n")
-                        content = content_elem.get_text(separator="\n", strip=True)
-                    else:
-                        content = art_soup.get_text(separator="\n", strip=True)[:1000]
-
-                    articles.append({
-                        "url": link,
-                        "title": title,
-                        "time": pub_time,
-                        "category": category_name,
-                        "location": "Tỉnh Thanh Hóa",
-                        "content": content,
-                        "source_name": "ĐÀI KTTV TỈNH THANH HÓA",
-                        "domain": "kttv.thanhhoa.gov.vn"
-                    })
-            except Exception as e: print(f"Lỗi KTTV detail: {e}")
-    except Exception as e: print(f"Lỗi KTTV category: {e}")
-    return articles
-
-def fetch_all_kttv_thanhhoa():
-    now_vn = datetime.utcnow() + timedelta(hours=7)
-    all_news = scrape_kttv_thanhhoa_category(KTTV_TH_DANGEROUS_WEATHER, "Thời tiết nguy hiểm") + scrape_kttv_thanhhoa_category(KTTV_TH_SPECIAL_HYDROLOGY, "Thủy văn đặc biệt")
-    return {"status": "success", "count": len(all_news), "alerts": all_news, "updated_at": now_vn.strftime("%H:%M %d/%m/%Y")}
-
-# ==================== QUÉT IWEATHER ====================
-def get_iweather_storm_warning(province_keyword="Thanh Hóa"):
-    now_vn = datetime.utcnow() + timedelta(hours=7)
-    try:
-        res = requests.get(IWEATHER_STORM_URL, headers=HEADERS, timeout=10)
-        if res.status_code != 200: return {"status": "error", "message": f"HTTP {res.status_code}"}
-        matches = re.findall(r'([^"\[\]\\]+?Tỉnh Thanh Hoá|[^"\[\]\\]+?Tỉnh Thanh Hóa)', res.text, re.IGNORECASE)
-        unique_locations = list(set([m.strip(' ",') for m in matches]))
-        matched_alerts = [{"location": loc, "intensity": "Mây dông / Sét phát triển", "message": "Phát hiện vùng mây đối lưu nguy hiểm gây dông sét", "time": now_vn.strftime('%H:%M %d/%m/%Y')} for loc in unique_locations]
-        return {"status": "success", "has_warning": len(matched_alerts) > 0, "count": len(matched_alerts), "alerts": matched_alerts, "updated_at": now_vn.strftime("%H:%M:%S %d/%m/%Y")}
-    except Exception as e: return {"status": "error", "message": str(e)}
-
-# ==================== QUÉT VNDMS (CHÍNH XÁC NỘI DUNG POPUP) ====================
-def fetch_vndms_popup_data():
-    now_vn = datetime.utcnow() + timedelta(hours=7)
-    alerts = []
-    try:
-        res = requests.get(VNDMS_LIST_API, headers=HEADERS, timeout=10)
-        if res.status_code != 200: return {"status": "error", "message": f"HTTP {res.status_code}"}
-        raw_data = res.json()
-        disaster_list = raw_data.get("data", []) if isinstance(raw_data, dict) else raw_data
-        if not isinstance(disaster_list, list): disaster_list = [raw_data]
-
-        for item in disaster_list:
-            if not isinstance(item, dict): continue
-            event_id = str(item.get("id") or item.get("DisasterId") or item.get("code") or "")
-            title = item.get("name") or item.get("title") or item.get("DisasterName") or "CẢNH BÁO THIÊN TAI"
-            start_time = item.get("startDate") or item.get("time") or item.get("createdDate") or now_vn.strftime('%d/%m/%Y - %H:%M')
-            location = item.get("affectedArea") or item.get("location") or item.get("khuVuc") or "Toàn quốc / Biển Đông"
-            risk_level = str(item.get("riskLevel") or item.get("level") or "3")
-
-            raw_content = ""
-            if event_id:
-                try:
-                    d_res = requests.get(f"{VNDMS_DETAIL_API}?id={event_id}", headers=HEADERS, timeout=5)
-                    if d_res.status_code == 200:
-                        d_data = d_res.json().get("data", {})
-                        if isinstance(d_data, dict): raw_content = d_data.get("dienBien") or d_data.get("content") or d_data.get("description") or ""
-                except Exception: pass
-
-            if not raw_content: raw_content = item.get("description") or item.get("summary") or "Đang cập nhật chi tiết..."
-
-            clean_text = re.sub(r'<br\s*/?>', '\n', raw_content, flags=re.IGNORECASE)
-            clean_text = re.sub(r'</p>', '\n', clean_text, flags=re.IGNORECASE)
-            clean_text = re.sub(r'<[^>]+>', '', clean_text).strip()
-
-            alerts.append({
-                "id": event_id,
-                "title": title,
-                "category": f"Thiên tai Cấp {risk_level}",
-                "location": location,
-                "time": start_time,
-                "content": clean_text,
-                "source_name": "HỆ THỐNG GIÁM SÁT THIÊN TAI (VNDMS)",
-                "domain": "vndms.gov.vn"
-            })
-        return {"status": "success", "alerts": alerts, "updated_at": now_vn.strftime("%H:%M %d/%m/%Y")}
-    except Exception as e: return {"status": "error", "message": str(e)}
-
-# ==================== HÀM FORMAT TELEGRAM TỔNG HỢP ====================
-def format_vndms_telegram(alert, updated_at):
-    theme = get_disaster_theme(alert['title'], alert['category'])
+def format_vndms_msg(alert, chat_id, host_url):
     msg = f"⚡ **CẢNH BÁO THỜI TIẾT & THIÊN TAI**\n━━━━━━━━━━━━━━━━━━\n"
     msg += f"📢 **CẢNH BÁO THIÊN TAI HỆ THỐNG VNDMS**\n"
-    msg += f"📅 *Cập nhật:* {updated_at}\n\n"
-    msg += f"{theme['icon']} **{alert['title'].upper()}**\n"
-    msg += f"⚠️ **Cấp độ rủi ro:** {alert['category']}\n"
-    msg += f"📍 **Khu vực ảnh hưởng:** {alert['location']}\n"
-    msg += f"🕒 **Thời gian bắt đầu:** {alert['time']}\n\n"
-    msg += f"📋 **THÔNG TIN TÓM TẮT / DIỄN BIẾN:**\n{alert['content']}\n\n"
+    msg += f"👤 *Chat ID:* `{chat_id}`\n"
+    msg += f"📅 *Cập nhật:* {alert['updated_at']}\n\n"
+    msg += f"🌀 **{alert['title']}**\n"
+    msg += f"⚠️ **Cấp độ rủi ro:** Cấp {alert['risk_level']}\n"
+    msg += f"📍 **Khu vực ảnh hưởng:** {alert['location']}\n\n"
+    msg += f"📋 **THÔNG TIN TÓM TẮT / DIỄN BIẾN:**\n{alert['summary']}\n\n"
+    msg += f"🖼️ 📊 [Xem Infographic HTML đẹp](https://{host_url}/infographic?type=vndms&chat_id={chat_id})\n"
     msg += f"🔗 [Xem trực tiếp trên VNDMS](https://vndms.gov.vn/)"
     return msg
 
-def format_kttv_telegram(alert, updated_at):
-    theme = get_disaster_theme(alert['title'], alert['category'])
+def format_kttv_msg(alert, chat_id, host_url, type_param):
     msg = f"⚡ **CẢNH BÁO THỜI TIẾT & THỦY VĂN THANH HÓA**\n━━━━━━━━━━━━━━━━━━\n"
-    msg += f"📢 **{alert['source_name']}**\n"
-    msg += f"🏷 **Danh mục:** {alert['category']}\n"
-    msg += f"📅 *Cập nhật:* {updated_at}\n\n"
-    msg += f"{theme['icon']} **{alert['title'].upper()}**\n"
-    msg += f"📍 **Khu vực:** {alert['location']}\n"
-    msg += f"🕒 **Thời gian phát tin:** {alert['time']}\n\n"
-    msg += f"📋 **NỘI DUNG BẢN TIN:**\n{alert['content'][:1500]}\n\n"
-    msg += f"🔗 [Xem chi tiết bản tin gốc]({alert['url']})"
+    msg += f"📢 **ĐÀI KTTV TỈNH THANH HÓA**\n"
+    msg += f"👤 *Chat ID:* `{chat_id}`\n"
+    msg += f"🏷 *Danh mục:* {alert['category']}\n"
+    msg += f"📅 *Cập nhật:* {alert['updated_at']}\n\n"
+    msg += f"⚠️ **{alert['title']}**\n"
+    msg += f"📍 **Khu vực:** {alert['location']}\n\n"
+    msg += f"📋 **NỘI DUNG BẢN TIN:**\n{alert['summary']}\n\n"
+    msg += f"🖼️ 📊 [Xem Infographic HTML đẹp](https://{host_url}/infographic?type={type_param}&chat_id={chat_id})"
     return msg
 
-def send_telegram_message(chat_id, text):
+def send_telegram(chat_id, text):
     url = f"{TELEGRAM_API_URL}/sendMessage"
     payload = {"chat_id": chat_id, "text": text, "parse_mode": "Markdown", "disable_web_page_preview": True}
     try: requests.post(url, json=payload, timeout=5)
-    except Exception as e: print(f"Lỗi gửi Telegram: {e}")
+    except Exception as e: print(f"Lỗi gửi tin: {e}")
 
-def broadcast_alert(text):
-    for chat_id in REGISTERED_CHATS:
-        send_telegram_message(chat_id, text)
-
-# ==================== WEB ROUTES ====================
-@app.route('/')
-def home():
-    global LAST_ALERT_COUNT, PROCESSED_VNDMS_IDS, PROCESSED_KTTV_URLS
-    
-    # 1. QUÉT DÔNG SẾT IWEATHER
-    iw_data = get_iweather_storm_warning("Thanh Hóa")
-    if iw_data.get("status") == "success":
-        current_count = iw_data.get("count", 0)
-        if iw_data.get("has_warning") and current_count != LAST_ALERT_COUNT:
-            msg = f"⚠️ **CẢNH BÁO TỰ ĐỘNG: PHÁT HIỆN DÔNG SẾT TẠI THANH HÓA!**\n"
-            msg += f"🕒 *Thời gian quét:* {iw_data['updated_at']}\n"
-            msg += f"📍 **Số khu vực phát hiện:** {current_count}\n"
-            for idx, alert in enumerate(iw_data['alerts'], 1):
-                msg += f"\n**{idx}.** {alert['location']}\n"
-            msg += "\n🌐 Radar iWeather: https://iweather.gov.vn/dashboard?areaRadar=COM&productRadar=CMAX"
-            broadcast_alert(msg)
-            LAST_ALERT_COUNT = current_count
-        elif not iw_data.get("has_warning"):
-            LAST_ALERT_COUNT = 0
-
-    # 2. QUÉT THIÊN TAI VNDMS (Đã bổ sung chuẩn định dạng & gửi tới từng Chat ID)
-    vndms_data = fetch_vndms_popup_data()
-    if vndms_data.get("status") == "success":
-        for alert in vndms_data.get("alerts", []):
-            event_key = alert["id"] if alert["id"] else alert["title"]
-            if event_key not in PROCESSED_VNDMS_IDS:
-                msg = format_vndms_telegram(alert, vndms_data["updated_at"])
-                broadcast_alert(msg)
-                PROCESSED_VNDMS_IDS.add(event_key)
-
-    # 3. QUÉT KTTV THANH HÓA (2 LINK)
-    kttv_data = fetch_all_kttv_thanhhoa()
-    if kttv_data.get("status") == "success":
-        for alert in kttv_data.get("alerts", []):
-            if alert["url"] not in PROCESSED_KTTV_URLS:
-                msg = format_kttv_telegram(alert, kttv_data["updated_at"])
-                broadcast_alert(msg)
-                PROCESSED_KTTV_URLS.add(alert["url"])
-
-    return jsonify({
-        "status": "running",
-        "active_chats": list(REGISTERED_CHATS),
-        "processed_vndms_events": len(PROCESSED_VNDMS_IDS),
-        "processed_kttv_articles": len(PROCESSED_KTTV_URLS)
-    })
-
-# ROUTE INFOGRAPHIC HTML (ĐỘNG CHO CẢ VNDMS & KTTV)
+# ==================== FLASK ROUTES ====================
 @app.route('/infographic')
 def show_infographic():
-    # Ưu tiên lấy tin VNDMS mới nhất, nếu không có lấy tin KTTV
-    vndms_data = fetch_vndms_popup_data()
-    alert_item = None
-    if vndms_data.get("status") == "success" and vndms_data.get("alerts"):
-        alert_item = vndms_data["alerts"][0]
+    chat_id = request.args.get('chat_id', 'Unknown')
+    info_type = request.args.get('type', 'vndms')
 
-    if not alert_item:
-        kttv_data = fetch_all_kttv_thanhhoa()
-        if kttv_data.get("status") == "success" and kttv_data.get("alerts"):
-            alert_item = kttv_data["alerts"][0]
-
-    if not alert_item:
-        alert_item = {
-            "title": "ÁP THẤP NHIỆT ĐỚI TRÊN BIỂN ĐÔNG",
-            "category": "Thiên tai Cấp 3",
-            "location": "Khu vực Vịnh Bắc Bộ",
-            "time": "07/08/2026 - 09:00",
-            "content": "- Sáng nay (07/8), vùng áp thấp trên khu vực Vịnh Bắc Bộ đã mạnh lên thành áp thấp nhiệt đới...\n- Trong 3 giờ qua, áp thấp nhiệt đới hầu như ít di chuyển, sức gió mạnh nhất vùng gần tâm áp thấp nhiệt đới mạnh cấp 6 (39-49km/h), giật cấp 8.",
-            "source_name": "HỆ THỐNG GIÁM SÁT THIÊN TAI (VNDMS)",
-            "domain": "vndms.gov.vn"
+    if info_type == 'vndms':
+        alerts = fetch_vndms_disasters()
+        data = alerts[0] if alerts else {
+            "source": "CẢNH BÁO THIÊN TAI HỆ THỐNG VNDMS",
+            "title": "KHÔNG CÓ CẢNH BÁO NGUY HIỂM",
+            "location": "Toàn quốc / Biển Đông",
+            "summary": "Hiện tại không phát hiện thiên tai nguy hiểm diện rộng trên hệ thống VNDMS.",
+            "updated_at": get_now_vn_str()
         }
+    elif info_type == 'kttv_thoi_tiet':
+        data = fetch_kttv_thanhhoa_article(KTTV_TH_TTNGUYHIEM, "Thời tiết nguy hiểm")
+    elif info_type == 'kttv_thuy_van':
+        data = fetch_kttv_thanhhoa_article(KTTV_TH_THUYVANDACBIET, "Thủy văn đặc biệt")
+    else:
+        data = {"source": "HỆ THỐNG CẢNH BÁO", "title": "BẢN TIN KHÔNG TỒN TẠI", "location": "N/A", "summary": "", "updated_at": get_now_vn_str()}
 
-    theme = get_disaster_theme(alert_item["title"], alert_item["category"])
-    return render_template_string(
-        INFOGRAPHIC_TEMPLATE,
-        alert=alert_item,
-        theme=theme,
-        updated_at=datetime.now().strftime("%H:%M %d/%m/%Y")
-    )
+    return render_template_string(INFOGRAPHIC_TEMPLATE, data=data, chat_id=chat_id)
 
-# WEBHOOK TELEGRAM
+@app.route('/')
+def home():
+    # Cronjob tự động quét dông sét
+    lw_data = fetch_iweather_lightning("Thanh Hóa")
+    if lw_data.get("has_lightning"):
+        for cid in REGISTERED_CHATS:
+            send_telegram(cid, format_lightning_msg(lw_data, cid))
+    return jsonify({"status": "running", "active_chats": list(REGISTERED_CHATS)})
+
 @app.route(f'/{TELEGRAM_BOT_TOKEN}', methods=['POST'])
 def telegram_webhook():
     update = request.get_json()
     if update and "message" in update:
-        message = update["message"]
-        chat_id = message["chat"]["id"]
-        text = message.get("text", "")
-
+        chat_id = update["message"]["chat"]["id"]
+        text = update["message"].get("text", "")
+        host_url = request.host
         REGISTERED_CHATS.add(chat_id)
 
+        # 1. Lệnh DÔNG SẾT -> Bắn tin nhắn chữ kèm Chat ID
         if text.startswith("/dong") or text.startswith("/dongset"):
-            send_telegram_message(chat_id, "⚡ Đang quét dữ liệu dông sét iWeather...")
-            data = get_iweather_storm_warning("Thanh Hóa")
-            if data.get("has_warning"):
-                msg = f"🚨 **CẢNH BÁO DÔNG SẾT THANH HÓA!**\n📍 Phát hiện {data['count']} khu vực có mây dông:"
-                for idx, a in enumerate(data['alerts'], 1): msg += f"\n**{idx}.** {a['location']}"
+            send_telegram(chat_id, f"⚡ Chat ID [{chat_id}]: Đang quét radar dông sét từ iWeather...")
+            lw_data = fetch_iweather_lightning("Thanh Hóa")
+            if lw_data.get("has_lightning"):
+                send_telegram(chat_id, format_lightning_msg(lw_data, chat_id))
             else:
-                msg = f"✅ **AN TOÀN:** Chưa phát hiện ổ dông sét tại Thanh Hóa."
-            send_telegram_message(chat_id, msg)
+                send_telegram(chat_id, f"✅ **iWeather ({lw_data['updated_at']}):** Chưa phát hiện ổ dông sét tại khu vực Thanh Hóa.")
 
+        # 2. Lệnh THIÊN TAI (VNDMS)
         elif text.startswith("/vndms") or text.startswith("/thientai"):
-            send_telegram_message(chat_id, "📡 Đang quét dữ liệu thiên tai VNDMS...")
-            vndms_data = fetch_vndms_popup_data()
-            if vndms_data.get("alerts"):
-                for alert in vndms_data["alerts"]:
-                    send_telegram_message(chat_id, format_vndms_telegram(alert, vndms_data["updated_at"]))
+            send_telegram(chat_id, f"📡 Chat ID [{chat_id}]: Đang truy vấn VNDMS...")
+            vndms_list = fetch_vndms_disasters()
+            if vndms_list:
+                for alert in vndms_list:
+                    send_telegram(chat_id, format_vndms_msg(alert, chat_id, host_url))
             else:
-                send_telegram_message(chat_id, "✅ **VNDMS:** Hiện không có sự kiện thiên tai diện rộng.")
+                send_telegram(chat_id, "✅ **VNDMS:** Hiện không có sự kiện thiên tai diện rộng nguy hiểm.")
 
-        elif text.startswith("/kttv") or text.startswith("/thanhhoa") or text.startswith("/start"):
-            send_telegram_message(chat_id, "📡 Đang cào dữ liệu mới nhất từ Đài KTTV Thanh Hóa...")
-            kttv_data = fetch_all_kttv_thanhhoa()
-            if kttv_data.get("alerts"):
-                for alert in kttv_data["alerts"]:
-                    send_telegram_message(chat_id, format_kttv_telegram(alert, kttv_data["updated_at"]))
-            else:
-                send_telegram_message(chat_id, "✅ Hiện chưa có bản tin thời tiết/thủy văn mới trên KTTV Thanh Hóa.")
+        # 3. Lệnh KTTV THANH HÓA (Cả 2 mục Thời tiết nguy hiểm & Thủy văn đặc biệt)
+        elif text.startswith("/kttv") or text.startswith("/start"):
+            send_telegram(chat_id, f"📡 Chat ID [{chat_id}]: Đang cào bản tin KTTV Thanh Hóa...")
+            
+            # Mục Thời tiết nguy hiểm
+            kttv_ttnh = fetch_kttv_thanhhoa_article(KTTV_TH_TTNGUYHIEM, "Thời tiết nguy hiểm")
+            if kttv_ttnh:
+                send_telegram(chat_id, format_kttv_msg(kttv_ttnh, chat_id, host_url, "kttv_thoi_tiet"))
+                
+            # Mục Thủy văn đặc biệt
+            kttv_tvdb = fetch_kttv_thanhhoa_article(KTTV_TH_THUYVANDACBIET, "Thủy văn đặc biệt")
+            if kttv_tvdb:
+                send_telegram(chat_id, format_kttv_msg(kttv_tvdb, chat_id, host_url, "kttv_thuy_van"))
 
     return "OK", 200
 
 if __name__ == "__main__":
-    port = int(os.environ.get("PORT", 5000))
-    app.run(host="0.0.0.0", port=port)
+    app.run(host="0.0.0.0", port=int(os.environ.get("PORT", 5000)))
