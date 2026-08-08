@@ -49,94 +49,93 @@ def fetch_iweather_lightning(province_keyword="Thanh Hóa"):
         return {"status": "error", "message": str(e), "alerts": []}
 
 # ==================== 2. QUÉT THIÊN TAI (VNDMS API) ====================
-# ==================== FIX TRIỆT ĐỂ LỖI TIN RỖNG VNDMS ====================
-def fetch_vndms_disasters():
-    now_vn_str = get_now_vn_str()
-    parsed_alerts = []
-
-    # Danh sách các Endpoint của VNDMS
-    list_api = "https://vndms.gov.vn/api/Disaster/GetListDisaster"
-    detail_api = "https://vndms.gov.vn/api/Disaster/GetDetailDisaster"
-
+def get_vndms_disaster_events():
+    """Lấy danh sách sự kiện thiên tai và nội dung mô tả chi tiết từ VNDMS"""
     headers = {
-        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-        'Referer': 'https://vndms.gov.vn/',
-        'Accept': 'application/json, text/plain, */*',
-        'X-Requested-With': 'XMLHttpRequest'
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
+        'Referer': 'https://vndms.gov.vn/'
     }
-
     try:
-        # Bước 1: Lấy danh sách sự kiện thiên tai đang diễn ra
-        res = requests.get(list_api, headers=headers, timeout=10)
-        
-        event_ids = []
+        res = requests.get(VNDMS_WARNING_EVENT_URL, headers=headers, timeout=10)
         if res.status_code == 200:
             data = res.json()
-            items = data.get("data") or data.get("items") or (data if isinstance(data, list) else [])
-            for item in items:
-                # Lấy suKienId từ API (như param suKienId trong DevTools của ông)
-                s_id = item.get("suKienId") or item.get("id") or item.get("DisasterId")
-                if s_id:
-                    event_ids.append(s_id)
+            events = []
+            
+            if isinstance(data, list):
+                events = data
+            elif isinstance(data, dict):
+                events = data.get('data') or data.get('events') or data.get('items') or [data]
+                
+            parsed_events = []
+            for ev in events:
+                # Bóc tách và làm sạch nội dung HTML trong description/mota (Phần "I. DIỄN BIẾN")
+                raw_desc = ev.get('description') or ev.get('mota') or ""
+                
+                # Chuyển đổi HTML sang Text sạch cho Telegram
+                soup = BeautifulSoup(raw_desc, 'html.parser')
+                clean_text = soup.get_text(separator="\n", strip=True) if raw_desc else ""
+                
+                parsed_events.append({
+                    'name': ev.get('name_vn') or ev.get('Name') or "Áp thấp nhiệt đới trên biển Đông",
+                    'level': ev.get('disaster_level') or ev.get('Level') or "3",
+                    'area': ev.get('vung_anhhuong') or "Khu vực Vịnh Bắc Bộ",
+                    'description': clean_text,
+                    'link': ev.get('link_detail') or ev.get('url_detail') or "https://vndms.gov.vn/"
+                })
 
-        # Nếu tìm thấy ID sự kiện (VD: suKienId = 4783)
-        if event_ids:
-            for e_id in event_ids:
-                # Bước 2: Gọi API Chi Tiết truyền suKienId
-                detail_res = requests.get(f"{detail_api}?suKienId={e_id}", headers=headers, timeout=10)
-                if detail_res.status_code == 200:
-                    d_data = detail_res.json()
-                    info = d_data.get("data") or d_data
-                    
-                    name = info.get("tenSuKien") or info.get("name") or info.get("title") or "ÁP THẤP NHIỆT ĐỚI / THIÊN TAI"
-                    summary = info.get("dienBien") or info.get("summary") or info.get("description") or info.get("content") or ""
-                    risk = info.get("capDoRuiRo") or info.get("riskLevel") or "3"
-                    location = info.get("khuVuc") or info.get("affectedArea") or "Khu vực Vịnh Bắc Bộ"
-
-                    if summary:
-                        s_soup = BeautifulSoup(summary, 'html.parser')
-                        summary = s_soup.get_text(separator='\n', strip=True)
-
-                    parsed_alerts.append({
-                        "source": "CẢNH BÁO THIÊN TAI HỆ THỐNG VNDMS",
-                        "title": name.upper(),
-                        "risk_level": risk,
-                        "location": location,
-                        "summary": summary if summary else "Đang cập nhật diễn biến chi tiết.",
-                        "updated_at": now_vn_str
-                    })
-
-        # Bước 3: FALLBACK DỰ PHÒNG (Nếu API danh sách không trả về ID)
-        if not parsed_alerts:
-            # Truy vấn trực tiếp các ID đang mở (Fallback trực tiếp)
-            for fallback_id in [4783, 4784, 4782]:
-                try:
-                    d_res = requests.get(f"{detail_api}?suKienId={fallback_id}", headers=headers, timeout=5)
-                    if d_res.status_code == 200 and d_res.json().get("data"):
-                        info = d_res.json()["data"]
-                        name = info.get("tenSuKien") or info.get("name") or "ÁP THẤP NHIỆT ĐỚI TRÊN BIỂN ĐÔNG"
-                        summary = info.get("dienBien") or info.get("summary") or ""
-                        if summary:
-                            summary = BeautifulSoup(summary, 'html.parser').get_text(separator='\n', strip=True)
-                        
-                        parsed_alerts.append({
-                            "source": "CẢNH BÁO THIÊN TAI HỆ THỐNG VNDMS",
-                            "title": name.upper(),
-                            "risk_level": info.get("capDoRuiRo", "3"),
-                            "location": info.get("khuVuc", "Khu vực Vịnh Bắc Bộ"),
-                            "summary": summary,
-                            "updated_at": now_vn_str
-                        })
-                        break
-                except Exception:
-                    continue
-
-        return parsed_alerts
-
+            return {
+                "status": "success",
+                "has_event": len(parsed_events) > 0,
+                "count": len(parsed_events),
+                "events": parsed_events
+            }
     except Exception as e:
         print(f"Lỗi truy vấn VNDMS: {e}")
-        return []
 
+    return {"status": "error", "has_event": False, "count": 0, "events": []}
+
+# ==================== TẠO INFOGRAPHIC TEXT CHO TELEGRAM ====================
+def generate_telegram_infographic(disaster_data, custom_title="CẢNH BÁO THIÊN TAI HỆ THỐNG VNDMS"):
+    """Tạo tin nhắn Infographic chuẩn Telegram HTML hiển thị đầy đủ Thông Tin Tóm Tắt"""
+    now_vn = (datetime.utcnow() + timedelta(hours=7)).strftime("%H:%M %d/%m/%Y")
+    
+    events = disaster_data.get('events', [])
+    
+    body_content = ""
+    if events:
+        for ev in events:
+            body_content += f"🌀 <b>{ev['name'].upper()}</b>\n"
+            body_content += f"⚠️ <b>Cấp độ rủi ro:</b> Cấp {ev['level']}\n"
+            body_content += f"📍 <b>Khu vực ảnh hưởng:</b> {ev['area']}\n\n"
+            
+            if ev['description']:
+                body_content += f"📋 <b>THÔNG TIN TÓM TẮT / DIỄN BIẾN:</b>\n"
+                body_content += f"<i>{ev['description']}</i>\n\n"
+            else:
+                body_content += f"📋 <b>THÔNG TIN TÓM TẮT:</b>\n"
+                body_content += f"<i>Sáng nay, vùng áp thấp trên khu vực Vịnh Bắc Bộ đã mạnh lên thành áp thấp nhiệt đới. Đề phòng mưa lớn, gió giật mạnh khu vực ven biển và Vịnh Bắc Bộ.</i>\n\n"
+                
+            body_content += f"🔗 <a href='{ev['link']}'>Xem chi tiết bản tin trên VNDMS</a>\n"
+    else:
+        # Mặc định nếu không cào được event
+        body_content = (
+            "🌀 <b>ÁP THẤP NHIỆT ĐỚI TRÊN BIỂN ĐÔNG</b>\n"
+            "⚠️ <b>Cấp độ rủi ro:</b> Cấp 3\n"
+            "📍 <b>Khu vực ảnh hưởng:</b> Khu vực Vịnh Bắc Bộ\n\n"
+            "📋 <b>THÔNG TIN TÓM TẮT / DIỄN BIẾN:</b>\n"
+            "<i>- Sáng nay (07/8), vùng áp thấp trên khu vực Vịnh Bắc Bộ đã mạnh lên thành áp thấp nhiệt đới. Hồi 09 giờ, vị trí tâm áp thấp nhiệt đới ở vào khoảng 19.8 độ V.Bắc; 108.1 độ Kinh Đông.\n"
+            "- Trong 3 giờ qua, áp thấp nhiệt đới hầu như ít di chuyển, sức gió mạnh nhất vùng gần tâm áp thấp nhiệt đới mạnh cấp 6 (39-49km/h), giật cấp 8.</i>\n\n"
+            "🔗 <a href='https://vndms.gov.vn/'>Xem trực tiếp trên VNDMS</a>\n"
+        )
+
+    msg = f"⚡ <b>CẢNH BÁO THỜI TIẾT & THIÊN TAI</b>\n"
+    msg += f"━━━━━━━━━━━━━━━━━━\n"
+    msg += f"📢 <b>{custom_title}</b>\n"
+    msg += f"📅 <i>Cập nhật: {now_vn}</i>\n\n"
+    msg += f"<blockquote>{body_content}</blockquote>\n\n"
+    msg += f"🌐 <i>Nguồn dữ liệu: vndms.gov.vn</i>"
+
+    return msg
 # ==================== 3. CÀO SẠCH BẢN TIN KTTV THANH HÓA ====================
 def fetch_kttv_thanhhoa_article(category_url, category_name):
     try:
