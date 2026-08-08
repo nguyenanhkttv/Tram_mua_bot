@@ -229,13 +229,41 @@ def telegram_webhook():
         chat_id = message["chat"]["id"]
         text = message.get("text", "")
 
+        # Lưu Chat ID người dùng
         save_chat(chat_id)
 
-        if text.startswith("/homnay") or text.startswith("/thientai") or text.startswith("/start"):
-            send_telegram_message(chat_id, "🔄 Đang quét dữ liệu diễn biến thiên tai từ VNDMS...")
+        # Kiểm tra các câu lệnh từ người dùng
+        if text.startswith("/start") or text.startswith("/homnay") or text.startswith("/thientai") or text.startswith("/dong"):
+            send_telegram_message(chat_id, "🔄 Đang quét dữ liệu Dông sét, Thiên tai VNDMS & Bản tin KTTV...")
+            
+            # --- 1. TRA CỨU DÔNG SÉT (iWeather) ---
+            dw = get_iweather_storm_warning("Thanh Hóa")
+            if dw.get("status") == "success":
+                if dw.get("has_warning"):
+                    msg_dw = f"🚨 <b>CẢNH BÁO DÔNG SÉT TẠI THANH HÓA!</b>\n🕒 <i>Cập nhật:</i> {dw['updated_at']}\n"
+                    msg_dw += f"📍 <b>Phát hiện {dw['count']} khu vực:</b>\n"
+                    for idx, alert in enumerate(dw['alerts'], 1):
+                        msg_dw += f"\n<b>{idx}.</b> {alert['location']}"
+                    msg_dw += "\n\n🌐 Radar: https://iweather.gov.vn/"
+                else:
+                    msg_dw = f"✅ <b>AN TOÀN ({dw['updated_at']}):</b> Chưa phát hiện mây dông sét tại Thanh Hóa."
+                send_telegram_message(chat_id, msg_dw)
+
+            # --- 2. TRA CỨU THIÊN TAI (VNDMS) ---
             disaster_data = get_vndms_disaster_events()
-            msg = generate_telegram_infographic(disaster_data)
-            send_telegram_message(chat_id, msg)
+            msg_vndms = generate_telegram_infographic(disaster_data)
+            send_telegram_message(chat_id, msg_vndms)
+
+            # --- 3. TRA CỨU BẢN TIN MỚI NHẤT (KTTV THANH HÓA) ---
+            articles = scrape_kttv_thanhhoa()
+            if articles:
+                top_art = articles[0]
+                msg_kttv = (
+                    f"📰 <b>BẢN TIN KTTV THANH HÓA MỚI NHẤT:</b>\n\n"
+                    f"📢 <b>{top_art['title']}</b>\n"
+                    f"🔗 <a href='{top_art['url']}'>Nhấn vào đây để xem chi tiết bản tin</a>"
+                )
+                send_telegram_message(chat_id, msg_kttv)
 
     return "OK", 200
 
