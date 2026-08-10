@@ -14,7 +14,6 @@ from playwright.async_api import async_playwright
 
 # 1. KHAI BÁO THƯ VIỆN GEMINI AI (Thêm 2 dòng này để hết gạch đỏ)
 import google.generativeai as genai
-from google.genai import types
 
 # 2. TỰ ĐỘNG TẢI CHROMIUM CHO PLAYWRIGHT
 try:
