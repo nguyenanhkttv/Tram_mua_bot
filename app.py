@@ -120,30 +120,22 @@ THEME_MAP = {
 }
 
 # ==================== BÓC TÁCH GEMINI AI (ĐÃ SỬA CHUẨN MODEL) ====================
-def parse_pdf_bytes_with_ai(pdf_bytes):
+ddef parse_pdf_bytes_with_ai(pdf_bytes):
+    """Gửi REST API trực tiếp tới Google - Không dùng SDK để tránh lỗi 404 tuyệt đối"""
     if not GEMINI_API_KEY:
         raise Exception("Chưa cấu hình GEMINI_API_KEY!")
 
-    # Cấu hình API Key VÀ ÉP DÙNG API VERSION V1 CHÍNH THỨC (Chống lỗi 404 v1beta)
-    genai.configure(
-        api_key=GEMINI_API_KEY,
-        client_options={'api_endpoint': 'generativelanguage.googleapis.com'}
-    )
-
+    # 1. Trích xuất văn bản từ PDF bằng pdfplumber
     raw_text = ""
     with pdfplumber.open(io.BytesIO(pdf_bytes)) as pdf:
         for page in pdf.pages:
             raw_text += page.extract_text() or ""
 
     if not raw_text.strip():
-        raise Exception("Không thể trích xuất chữ từ PDF!")
+        raise Exception("Không thể đọc được nội dung chữ trong file PDF!")
 
-    # Cấu hình khởi tạo model chuẩn không bị dính prefix
-    model = genai.GenerativeModel(
-        model_name='gemini-1.5-flash'
-    )
-    
-    prompt = f"""
+    # 2. Chuẩn bị Prompt
+    prompt_text = f"""
     Bạn là chuyên gia Khí tượng Thủy văn. Hãy phân tích bản tin KTTV dưới đây và xuất ra DUY NHẤT 1 chuỗi JSON chuẩn.
 
     Cấu trúc JSON bắt buộc:
@@ -164,11 +156,31 @@ def parse_pdf_bytes_with_ai(pdf_bytes):
     {raw_text}
     """
 
-    res = model.generate_content(
-        prompt, 
-        generation_config={"response_mime_type": "application/json"}
-    )
-    return json.loads(res.text)
+    # 3. Gọi REST API trực tiếp (V2 Endpoint chính thức)
+    url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key={GEMINI_API_KEY}"
+    
+    payload = {
+        "contents": [{
+            "parts": [{"text": prompt_text}]
+        }],
+        "generationConfig": {
+            "response_mime_type": "application/json"
+        }
+    }
+
+    response = requests.post(url, json=payload, headers={"Content-Type": "application/json"}, timeout=30)
+    
+    if response.status_code != 200:
+        raise Exception(f"Google API Error [{response.status_code}]: {response.text}")
+
+    res_json = response.json()
+    
+    # 4. Trích xuất kết quả JSON trả về từ Google
+    try:
+        json_str = res_json['candidates'][0]['content']['parts'][0]['text']
+        return json.loads(json_str)
+    except Exception as e:
+        raise Exception(f"Lỗi phản hồi từ AI: {e} | Raw: {res_json}")
 
 async def render_html_to_png(data, output_path):
     bulletin_type = data.get("type", "NANG_NONG")
