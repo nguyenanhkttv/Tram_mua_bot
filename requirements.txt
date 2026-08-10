@@ -6,3 +6,7 @@ python-telegram-bot>=20.0
 gunicorn
 Pillow>=10.2.0
 html2image
+pdfplumber
+jinja2
+playwright
+google-genai
