@@ -9,7 +9,7 @@ IWEATHER_STORM_URL = "https://iweather.gov.vn/product/warningstorm?token=null"
 VNDMS_WARNING_URL = "https://vndms.gov.vn/EventDisaster/WarningEvent"
 
 # API Giám sát Trạm Mạng Nước (cần điền đúng URL endpoint của API ReadDeviceUser)
-IOT_STATION_URL = os.environ.get("IOT_STATION_URL", "http://iot.vientnmt.com/app/user/ReadDeviceUser") # Tùy chỉnh URL chính xác nếu có
+IOT_STATION_URL = os.environ.get("IOT_STATION_URL", "http://iot.vientnmt.com:8888/api/DataAPI/ReadDeviceUser")
 IOT_TOKENKEY = os.environ.get("IOT_TOKENKEY", "rRh2Tws7G5ba7HCNLjc73REyXSixwmIPK2tE8t5Nr...") # Lấy tokenkey từ DevTools Payload
 
 TELEGRAM_BOT_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN", "8587075816:AAHlm9r7mwCjEQlgmx6KjoZ8AE7Vd844x6s")
