@@ -146,38 +146,39 @@ THEME_MAP = {
 from google.genai import types # Nhớ đảm bảo có dòng import này ở đầu file app.py
 
 def parse_pdf_bytes_with_ai(pdf_bytes):
-    """Gửi trực tiếp PDF byte cho Gemini bóc tách JSON chuẩn xác 100%"""
-    if not gemini_client:
-        raise Exception("Chưa cấu hình GEMINI_API_KEY!")
+    """Gửi dữ liệu cho Gemini bóc tách JSON chuẩn xác 100%"""
+    if not gemini_client or GEMINI_API_KEY == "YOUR_GEMINI_API_KEY":
+        raise Exception("Chưa cấu hình GEMINI_API_KEY! Hãy kiểm tra lại API Key.")
 
-    prompt = """
-    Bạn là chuyên gia Khí tượng Thủy văn. Hãy phân tích toàn bộ nội dung file PDF bản tin được đính kèm và trích xuất dữ liệu trả về duy nhất một chuỗi JSON chuẩn.
+    # Đọc chữ thô từ PDF
+    raw_text = ""
+    with pdfplumber.open(io.BytesIO(pdf_bytes)) as pdf:
+        for page in pdf.pages:
+            raw_text += page.extract_text() or ""
 
-    Yêu cầu cấu trúc JSON:
-    {
+    prompt = f"""
+    Bạn là chuyên gia Khí tượng Thủy văn. Hãy phân tích bản tin dưới đây và trả về DUY NHẤT một chuỗi JSON theo cấu trúc:
+    {{
       "type": "NANG_NONG" | "MUA_LON" | "BAO" | "LU_QUET" | "DONG_LOC",
-      "title": "Tiêu đề bản tin ngắn gọn (Viết hoa)",
-      "doc_number": "Số hiệu bản tin đầy đủ",
-      "issue_time": "Thời gian phát hành bản tin",
+      "title": "TIÊU ĐỀ BẢN TIN (VIẾT HOA)",
+      "doc_number": "Số hiệu bản tin",
+      "issue_time": "Thời gian phát hành",
       "stats": [
-         {"label": "Tên chỉ số", "value": "Giá trị", "note": "Ghi chú ngắn (nếu có)"}
+         {{"label": "Tên chỉ số", "value": "Giá trị", "note": "Ghi chú ngắn"}}
       ],
-      "affected_areas": ["Danh sách các khu vực/huyện/trạm bị ảnh hưởng"],
-      "warnings": ["Các khuyến cáo / cảnh báo quan trọng"],
-      "risk_level": "Cấp độ rủi ro thiên tai"
-    }
+      "affected_areas": ["Địa bàn 1", "Địa bàn 2"],
+      "warnings": ["Cảnh báo 1", "Cảnh báo 2"],
+      "risk_level": "Cấp độ rủi ro"
+    }}
+
+    Nội dung bản tin:
+    {raw_text}
     """
 
-    # Gửi trực tiếp file PDF cho Gemini 1.5 Flash xử lý
+    # Gọi SDK chuẩn của google-genai
     response = gemini_client.models.generate_content(
-        model='gemini-1.5-flash',
-        contents=[
-            types.Part.from_bytes(
-                data=pdf_bytes,
-                mime_type='application/pdf'
-            ),
-            prompt
-        ],
+        model='gemini-2.5-flash',
+        contents=prompt,
         config={'response_mime_type': 'application/json'}
     )
 
