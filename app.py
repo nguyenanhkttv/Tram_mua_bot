@@ -124,7 +124,11 @@ def parse_pdf_bytes_with_ai(pdf_bytes):
     if not GEMINI_API_KEY:
         raise Exception("Chưa cấu hình GEMINI_API_KEY!")
 
-    genai.configure(api_key=GEMINI_API_KEY)
+    # Cấu hình API Key VÀ ÉP DÙNG API VERSION V1 CHÍNH THỨC (Chống lỗi 404 v1beta)
+    genai.configure(
+        api_key=GEMINI_API_KEY,
+        client_options={'api_endpoint': 'generativelanguage.googleapis.com'}
+    )
 
     raw_text = ""
     with pdfplumber.open(io.BytesIO(pdf_bytes)) as pdf:
@@ -134,8 +138,10 @@ def parse_pdf_bytes_with_ai(pdf_bytes):
     if not raw_text.strip():
         raise Exception("Không thể trích xuất chữ từ PDF!")
 
-    # Dùng model chuẩn sản xuất chính thức của Google
-    model = genai.GenerativeModel('gemini-1.5-flash')
+    # Cấu hình khởi tạo model chuẩn không bị dính prefix
+    model = genai.GenerativeModel(
+        model_name='gemini-1.5-flash'
+    )
     
     prompt = f"""
     Bạn là chuyên gia Khí tượng Thủy văn. Hãy phân tích bản tin KTTV dưới đây và xuất ra DUY NHẤT 1 chuỗi JSON chuẩn.
@@ -158,7 +164,10 @@ def parse_pdf_bytes_with_ai(pdf_bytes):
     {raw_text}
     """
 
-    res = model.generate_content(prompt, generation_config={"response_mime_type": "application/json"})
+    res = model.generate_content(
+        prompt, 
+        generation_config={"response_mime_type": "application/json"}
+    )
     return json.loads(res.text)
 
 async def render_html_to_png(data, output_path):
