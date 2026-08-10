@@ -8,6 +8,10 @@ from flask import Flask, request, jsonify
 IWEATHER_STORM_URL = "https://iweather.gov.vn/product/warningstorm?token=null"
 VNDMS_WARNING_URL = "https://vndms.gov.vn/EventDisaster/WarningEvent"
 
+# API Giám sát Trạm Mạng Nước (cần điền đúng URL endpoint của API ReadDeviceUser)
+IOT_STATION_URL = os.environ.get("IOT_STATION_URL", "http://iot.vientnmt.com/app/user/ReadDeviceUser") # Tùy chỉnh URL chính xác nếu có
+IOT_TOKENKEY = os.environ.get("IOT_TOKENKEY", "rRh2Tws7G5ba7HCNLjc73REyXSixwmIPK2tE8t5Nr...") # Lấy tokenkey từ DevTools Payload
+
 TELEGRAM_BOT_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN", "8587075816:AAHlm9r7mwCjEQlgmx6KjoZ8AE7Vd844x6s")
 TELEGRAM_API_URL = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}"
 
@@ -21,6 +25,65 @@ app = Flask(__name__)
 REGISTERED_CHATS = set()
 LAST_IWEATHER_COUNT = 0
 SENT_VNDMS_IDS = set()
+
+# Bộ nhớ lưu trạng thái trạm trước đó để so sánh thay đổi: { "device_id": True/False }
+STATION_PREVIOUS_STATUS = {}
+
+# ==================== LOGIC GIÁM SÁT TRẠM MẠNG NƯỚC (IOT) ====================
+def get_station_status():
+    now_vn = datetime.utcnow() + timedelta(hours=7)
+    headers = {
+        **HEADERS_DEFAULT,
+        'Content-Type': 'application/json'
+    }
+    payload = {
+        "tokenkey": IOT_TOKENKEY
+    }
+    try:
+        res = requests.post(IOT_STATION_URL, json=payload, headers=headers, timeout=12)
+        if res.status_code != 200:
+            return {"status": "error", "message": f"HTTP {res.status_code}"}
+        
+        data = res.json()
+        devices = data.get("list_devices", [])
+        
+        station_list = []
+        for dev in devices:
+            station_list.append({
+                "id": str(dev.get("Device_id", "")),
+                "name": dev.get("Device_name", "Không rõ tên"),
+                "status": bool(dev.get("Status", False)), # True: Kết nối, False: Mất kết nối
+                "area": dev.get("area", "Khác")
+            })
+            
+        return {
+            "status": "success",
+            "has_data": len(station_list) > 0,
+            "stations": station_list,
+            "updated_at": now_vn.strftime("%H:%M:%S %d/%m/%Y")
+        }
+    except Exception as e:
+        return {"status": "error", "message": str(e)}
+
+def format_station_message(data):
+    if data.get("status") != "success":
+        return f"❌ **[GIÁM SÁT TRẠM]** Lỗi kết nối API trạm: `{data.get('message')}`"
+    
+    stations = data.get("stations", [])
+    online_count = sum(1 for s in stations if s["status"])
+    offline_count = len(stations) - online_count
+    
+    msg = f"📡 **[TRẠNG THÁI HỆ THỐNG TRẠM MẠNG NƯỚC]**\n"
+    msg += f"🕒 *Cập nhật:* `{data['updated_at']}`\n"
+    msg += f"🟢 Đang kết nối: **{online_count}** | 🔴 Mất kết nối: **{offline_count}**\n"
+    msg += "───────────────────\n"
+    
+    for s in stations:
+        icon = "🟢" if s["status"] else "🔴"
+        status_text = "Đang kết nối" if s["status"] else "MẤT KẾT NỐI"
+        msg += f"{icon} **{s['name']}**\n└ Trạng thái: *{status_text}*\n"
+        
+    return msg
 
 # ==================== LOGIC QUÉT RADAR DÔNG SÉT (IWEATHER) ====================
 def get_iweather_storm_warning(province_keyword="Thanh Hóa"):
@@ -115,9 +178,38 @@ def broadcast_alert(text):
 # ==================== ROUTE CHẠY TỰ ĐỘNG KHÔNG DỪNG (CRON/PING) ====================
 @app.route('/')
 def home():
-    global LAST_IWEATHER_COUNT, SENT_VNDMS_IDS
+    global LAST_IWEATHER_COUNT, SENT_VNDMS_IDS, STATION_PREVIOUS_STATUS
     
-    # Quét Dông sét iWeather
+    # 1. Quét Cảnh báo Mất kết nối Trạm IoT
+    station_data = get_station_status()
+    if station_data.get("status") == "success":
+        for station in station_data.get("stations", []):
+            st_id = station["id"]
+            st_name = station["name"]
+            is_online = station["status"]
+            
+            # Nếu đã có lịch sử theo dõi
+            if st_id in STATION_PREVIOUS_STATUS:
+                prev_online = STATION_PREVIOUS_STATUS[st_id]
+                # Chuyển từ Online -> Offline: Bắn cảnh báo ngay lập tức
+                if prev_online and not is_online:
+                    alert_msg = (f"🚨 **[CẢNH BÁO MẤT KẾT NỐI TRẠM]**\n"
+                                 f"⚠️ Trạm: **{st_name}**\n"
+                                 f"❌ Trạng thái: **ĐÃ MẤT KẾT NỐI**\n"
+                                 f"🕒 Thời gian phát hiện: `{station_data['updated_at']}`")
+                    broadcast_alert(alert_msg)
+                # Chuyển từ Offline -> Online: Bắn thông báo phục hồi
+                elif not prev_online and is_online:
+                    recovery_msg = (f"✅ **[THÔNG BÁO TRẠM KẾT NỐI LẠI]**\n"
+                                    f"📡 Trạm: **{st_name}**\n"
+                                    f"🟢 Trạng thái: **ĐÃ KẾT NỐI LẠI**\n"
+                                    f"🕒 Thời gian: `{station_data['updated_at']}`")
+                    broadcast_alert(recovery_msg)
+            
+            # Cập nhật lại bộ nhớ
+            STATION_PREVIOUS_STATUS[st_id] = is_online
+
+    # 2. Quét Dông sét iWeather
     iweather_data = get_iweather_storm_warning("Thanh Hóa")
     if iweather_data.get("status") == "success":
         current_count = iweather_data.get("count", 0)
@@ -127,7 +219,7 @@ def home():
         elif not iweather_data.get("has_warning"):
             LAST_IWEATHER_COUNT = 0
 
-    # Quét Cảnh báo VNDMS
+    # 3. Quét Cảnh báo VNDMS
     vndms_data = get_vndms_warning()
     if vndms_data.get("status") == "success" and vndms_data.get("has_warning"):
         new_alerts = [a for a in vndms_data['alerts'] if a['id'] not in SENT_VNDMS_IDS]
@@ -139,7 +231,11 @@ def home():
             v_copy['count'] = len(new_alerts)
             broadcast_alert(format_vndms_message(v_copy, is_auto=True))
 
-    return jsonify({"status": "running", "registered_chats": list(REGISTERED_CHATS)})
+    return jsonify({
+        "status": "running", 
+        "registered_chats": list(REGISTERED_CHATS),
+        "tracked_stations": len(STATION_PREVIOUS_STATUS)
+    })
 
 # ==================== TELEGRAM WEBHOOK (NHẬN LỆNH TỪ USER) ====================
 @app.route(f'/{TELEGRAM_BOT_TOKEN}', methods=['POST'])
@@ -153,15 +249,25 @@ def telegram_webhook():
         # Tự động ghi nhớ Chat ID người dùng
         REGISTERED_CHATS.add(chat_id)
 
-        # Xử lý khi nhận các câu lệnh tra cứu
-        if text.startswith("/start") or text.startswith("/dong") or text.startswith("/canhbao") or text.startswith("/thoitiet"):
-            send_telegram_message(chat_id, "🔍 *Đang quét dữ liệu iWeather & VNDMS...*")
+        # Trả lời lệnh tra cứu danh sách trạm
+        if text.startswith("/tram") or text.startswith("/thietbi"):
+            send_telegram_message(chat_id, "🔍 *Đang kiểm tra kết nối các trạm...*")
+            st_data = get_station_status()
+            send_telegram_message(chat_id, format_station_message(st_data))
+
+        # Trả lời câu lệnh tổng hợp/thời tiết
+        elif text.startswith("/start") or text.startswith("/dong") or text.startswith("/canhbao") or text.startswith("/thoitiet"):
+            send_telegram_message(chat_id, "🔍 *Đang quét dữ liệu Radar, Thiên tai & Trạm đo...*")
             
-            # 1. Trả về thông tin Dông Sét
+            # 1. Trả về thông tin Trạm
+            st_data = get_station_status()
+            send_telegram_message(chat_id, format_station_message(st_data))
+
+            # 2. Trả về thông tin Dông Sét
             iweather_data = get_iweather_storm_warning("Thanh Hóa")
             send_telegram_message(chat_id, format_iweather_message(iweather_data, is_auto=False))
             
-            # 2. Trả về thông tin Cảnh báo VNDMS
+            # 3. Trả về thông tin Cảnh báo VNDMS
             vndms_data = get_vndms_warning()
             send_telegram_message(chat_id, format_vndms_message(vndms_data, is_auto=False))
 
