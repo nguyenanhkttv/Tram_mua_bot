@@ -177,7 +177,7 @@ def parse_pdf_bytes_with_ai(pdf_bytes):
 
     # Gọi SDK chuẩn của google-genai
     response = gemini_client.models.generate_content(
-        model='gemini-2.5-flash',
+        model='gemini-1.5-flash',
         contents=prompt,
         config={'response_mime_type': 'application/json'}
     )
