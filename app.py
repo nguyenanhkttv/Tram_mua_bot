@@ -6,37 +6,30 @@ import asyncio
 import requests
 import subprocess
 import pdfplumber
-import google.generativeai as genai
 from datetime import datetime, timedelta
 from flask import Flask, request, jsonify
 from jinja2 import Template
 from playwright.async_api import async_playwright
-
-# 1. KHAI BÁO THƯ VIỆN GEMINI AI (Thêm 2 dòng này để hết gạch đỏ)
 import google.generativeai as genai
 
-# 2. TỰ ĐỘNG TẢI CHROMIUM CHO PLAYWRIGHT
+# =========================================================
+# TỰ ĐỘNG CÀI CHROMIUM KHI SERVER RENDER KHỞI ĐỘNG
+# =========================================================
 try:
     subprocess.run(["playwright", "install", "chromium"], check=True)
     subprocess.run(["playwright", "install-deps"], check=True)
 except Exception as e:
-    print(f"Lưu ý cài Playwright Chromium: {e}")
+    print(f"Lưu ý Playwright Chromium: {e}")
 
-# 3. CẤU HÌNH URL & BOT TOKEN
+# ==================== CẤU HÌNH HỆ THỐNG ====================
 IWEATHER_STORM_URL = "https://iweather.gov.vn/product/warningstorm?token=null"
 VNDMS_WARNING_URL = "https://vndms.gov.vn/EventDisaster/WarningEvent"
 
 TELEGRAM_BOT_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN", "8587075816:AAHlm9r7mwCjEQlgmx6KjoZ8AE7Vd844x6s")
 TELEGRAM_API_URL = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}"
 
-# 4. KHAI BÁO GEMINI API KEY & KHỞI TẠO CLIENT
-GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY")
-
-try:
-    gemini_client = genai.Client(api_key=GEMINI_API_KEY)
-except Exception as e:
-    print(f"Lỗi khởi tạo Gemini Client: {e}")
-    gemini_client = None
+# Gemini API Key lấy từ Variable của Render hoặc cài trực tiếp
+GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY", "")
 
 HEADERS_DEFAULT = {
     'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
@@ -47,9 +40,9 @@ app = Flask(__name__)
 # Lưu danh sách Chat ID nhận thông báo tự động (lưu tạm RAM)
 REGISTERED_CHATS = set()
 LAST_IWEATHER_COUNT = 0
-SENT_VNDMS_IDS = set()  # Lưu ID các cảnh báo VNDMS đã gửi để tránh lặp lại
+SENT_VNDMS_IDS = set()
 
-# ==================== TEMPLATE HTML & THEMES DÙNG CHO INFOGRAPHIC ====================
+# ==================== TEMPLATE HTML & THEMES ====================
 HTML_TEMPLATE_STR = """
 <!DOCTYPE html>
 <html lang="vi">
@@ -141,43 +134,34 @@ THEME_MAP = {
     "DONG_LOC": {"primary": "#f57f17", "header_bg": "linear-gradient(135deg, #fbc02d, #7b1fa2)", "card_bg": "#fffde7", "badge_bg": "#fff9c4"}
 }
 
-# ==================== HÀM BÓC TÁCH PDF & RENDER INFOGRAPHIC ====================
-
-from google.genai import types # Nhớ đảm bảo có dòng import này ở đầu file app.py
-
+# ==================== BÓC TÁCH DỮ LIỆU PDF VÀ RENDER PNG ====================
 def parse_pdf_bytes_with_ai(pdf_bytes):
-    """Tự động hỏi Google danh sách Model khả dụng của Key và bóc tách dữ liệu chuẩn 100%"""
-    if not GEMINI_API_KEY or GEMINI_API_KEY == "YOUR_GEMINI_API_KEY":
-        raise Exception("Chưa cấu hình GEMINI_API_KEY! Hãy kiểm tra lại API Key.")
+    if not GEMINI_API_KEY:
+        raise Exception("Chưa cài đặt GEMINI_API_KEY trong Environment Variables!")
 
-    # Cấu hình API Key
     genai.configure(api_key=GEMINI_API_KEY)
 
-    # 1. Đọc chữ thô từ PDF bằng pdfplumber
+    # 1. Trích xuất text từ PDF bằng pdfplumber
     raw_text = ""
     with pdfplumber.open(io.BytesIO(pdf_bytes)) as pdf:
         for page in pdf.pages:
             raw_text += page.extract_text() or ""
 
-    # 2. TỰ ĐỘNG LẤY TÊN MODEL HỢP LỆ VỚI CHÍNH API KEY CỦA ANH (Chống lỗi 404 tuyệt đối)
+    # 2. Tự động lấy tên model khả dụng cho API Key
     valid_model_name = None
     try:
         for m in genai.list_models():
             if 'generateContent' in m.supported_generation_methods:
-                # Ưu tiên chọn model dòng flash
                 if 'flash' in m.name:
                     valid_model_name = m.name
                     break
                 valid_model_name = m.name
     except Exception as e:
-        raise Exception(f"Lỗi truy vấn danh sách Model từ Google: {e}")
+        print(f"Lỗi truy vấn list_models: {e}")
 
     if not valid_model_name:
-        raise Exception("API Key của anh hiện không có quyền truy cập model Gemini nào.")
+        valid_model_name = "models/gemini-1.5-flash"
 
-    print(f"--> Đã tự động kết nối thành công tới Model: {valid_model_name}")
-
-    # 3. Tạo Prompt
     prompt = f"""
     Bạn là chuyên gia Khí tượng Thủy văn. Hãy phân tích bản tin KTTV dưới đây và trả về DUY NHẤT một chuỗi JSON chuẩn.
     
@@ -199,7 +183,6 @@ def parse_pdf_bytes_with_ai(pdf_bytes):
     {raw_text}
     """
 
-    # 4. Gọi Model chuẩn vừa được xác minh
     model = genai.GenerativeModel(valid_model_name)
     response = model.generate_content(
         prompt,
@@ -207,9 +190,8 @@ def parse_pdf_bytes_with_ai(pdf_bytes):
     )
 
     return json.loads(response.text)
-    
+
 async def render_html_to_png(data, output_path):
-    """Chuyển đổi HTML thành file PNG bằng Playwright"""
     bulletin_type = data.get("type", "NANG_NONG")
     theme = THEME_MAP.get(bulletin_type, THEME_MAP["NANG_NONG"])
 
@@ -227,16 +209,14 @@ async def render_html_to_png(data, output_path):
             await page.screenshot(path=output_path, type="png")
         await browser.close()
 
-# ==================== 1. HÀM BÓC TÁCH IWEATHER (DÔNG SÉT) ====================
+# ==================== 1. IWEATHER (DÔNG SÉT) ====================
 def get_iweather_storm_warning(province_keyword="Thanh Hóa"):
     headers = {
         **HEADERS_DEFAULT,
         'Referer': 'https://iweather.gov.vn/dashboard?areaRadar=COM&productRadar=CMAX',
         'Accept': 'application/json, text/plain, */*'
     }
-    
     now_vn = datetime.utcnow() + timedelta(hours=7)
-    
     try:
         res = requests.get(IWEATHER_STORM_URL, headers=headers, timeout=12)
         if res.status_code != 200:
@@ -244,7 +224,6 @@ def get_iweather_storm_warning(province_keyword="Thanh Hóa"):
 
         raw_text = res.text
         matched_alerts = []
-        
         pattern = r'([^"\[\]\\]+?Tỉnh Thanh Hoá|[^"\[\]\\]+?Tỉnh Thanh Hóa)'
         matches = re.findall(pattern, raw_text, re.IGNORECASE)
         unique_locations = list(set([m.strip(' ",') for m in matches]))
@@ -264,11 +243,10 @@ def get_iweather_storm_warning(province_keyword="Thanh Hóa"):
             "alerts": matched_alerts,
             "updated_at": now_vn.strftime("%H:%M:%S %d/%m/%Y")
         }
-
     except Exception as e:
         return {"status": "error", "message": f"Lỗi iWeather: {str(e)}"}
 
-# ==================== 2. HÀM BÓC TÁCH VNDMS (THỜI TIẾT NGUY HIỂM) ====================
+# ==================== 2. VNDMS (GIÁM SÁT THIÊN TAI) ====================
 def get_vndms_warning():
     now_vn = datetime.utcnow() + timedelta(hours=7)
     try:
@@ -278,7 +256,6 @@ def get_vndms_warning():
 
         data = res.json()
         alerts = []
-
         if isinstance(data, list) and len(data) > 0:
             for item in data:
                 alerts.append({
@@ -296,11 +273,10 @@ def get_vndms_warning():
             "alerts": alerts,
             "updated_at": now_vn.strftime("%H:%M:%S %d/%m/%Y")
         }
-
     except Exception as e:
         return {"status": "error", "message": f"Lỗi VNDMS: {str(e)}"}
 
-# ==================== HÀM FORMAT MESSAGE ====================
+# ==================== FORMAT CÁC DẠNG TIN NHẮN TELEGRAM ====================
 def format_iweather_message(data, is_auto=False):
     if not data.get("has_warning"):
         return f"⚡ **[RADAR DÔNG SÉT - IWEATHER]**\n🕒 *Cập nhật:* {data['updated_at']}\n\n✅ **AN TOÀN:** Hiện chưa phát hiện mây đối lưu hay nguy cơ dông sét tại Thanh Hóa."
@@ -312,7 +288,6 @@ def format_iweather_message(data, is_auto=False):
     msg += "───────────────────\n"
     for idx, alert in enumerate(data['alerts'], 1):
         msg += f"🌩️ **{idx}.** {alert['location']}\n"
-    
     msg += "───────────────────\n"
     msg += "🌐 [Mở bản đồ Radar CMAX](https://iweather.gov.vn/dashboard?areaRadar=COM&productRadar=CMAX)"
     return msg
@@ -325,33 +300,24 @@ def format_vndms_message(data, is_auto=False):
     msg = f"{header}\n"
     msg += f"🕒 *Cập nhật:* `{data['updated_at']}`\n"
     msg += f"📋 *Số bản tin hiện tại:* **{data['count']} tin**\n\n"
-    
     for idx, alert in enumerate(data['alerts'], 1):
         msg += f"🔻 **BẢN TIN {idx}: {alert['title'].upper()}**\n"
         msg += f"⏱ **Bắt đầu:** {alert['start_time']}\n"
         msg += f"⚠️ **Cấp độ rủi ro:** `{alert['risk_level']}`\n"
         msg += f"📝 **Nội dung:** {alert['description']}\n"
         msg += "▫️▫️▫️▫️▫️▫️▫️▫️▫️\n"
-        
     msg += "🌐 *Nguồn:* Cục QLĐĐ & PCTT (vndms.gov.vn)"
     return msg
 
-# ==================== HÀM GỬI TIN NHẮN & ẢNH TELEGRAM ====================
 def send_telegram_message(chat_id, text):
     url = f"{TELEGRAM_API_URL}/sendMessage"
-    payload = {
-        "chat_id": chat_id,
-        "text": text,
-        "parse_mode": "Markdown",
-        "disable_web_page_preview": True
-    }
+    payload = {"chat_id": chat_id, "text": text, "parse_mode": "Markdown", "disable_web_page_preview": True}
     try:
         requests.post(url, json=payload, timeout=5)
     except Exception as e:
-        print(f"Lỗi gửi tin nhắn Telegram: {e}")
+        print(f"Lỗi gửi Telegram: {e}")
 
 def send_telegram_photo(chat_id, photo_path, caption=""):
-    """Hàm gửi file Ảnh PNG trực tiếp lên Telegram"""
     url = f"{TELEGRAM_API_URL}/sendPhoto"
     try:
         with open(photo_path, 'rb') as photo_file:
@@ -365,12 +331,10 @@ def broadcast_alert(text):
     for chat_id in REGISTERED_CHATS:
         send_telegram_message(chat_id, text)
 
-# ==================== WEB ROUTES ====================
+# ==================== WEB ROUTES & WEBHOOK ====================
 @app.route('/')
 def home():
     global LAST_IWEATHER_COUNT, SENT_VNDMS_IDS
-    
-    # --- 1. KIỂM TRA IWEATHER (DÔNG SÉT) ---
     iweather_data = get_iweather_storm_warning("Thanh Hóa")
     if iweather_data.get("status") == "success":
         current_count = iweather_data.get("count", 0)
@@ -381,15 +345,11 @@ def home():
         elif not iweather_data.get("has_warning"):
             LAST_IWEATHER_COUNT = 0
 
-    # --- 2. KIỂM TRA VNDMS (THỜI TIẾT NGUY HIỂM) ---
     vndms_data = get_vndms_warning()
     if vndms_data.get("status") == "success" and vndms_data.get("has_warning"):
-        new_alerts = []
-        for alert in vndms_data['alerts']:
-            if alert['id'] not in SENT_VNDMS_IDS:
-                SENT_VNDMS_IDS.add(alert['id'])
-                new_alerts.append(alert)
-        
+        new_alerts = [a for a in vndms_data['alerts'] if a['id'] not in SENT_VNDMS_IDS]
+        for a in new_alerts:
+            SENT_VNDMS_IDS.add(a['id'])
         if new_alerts:
             vndms_data_copy = dict(vndms_data)
             vndms_data_copy['alerts'] = new_alerts
@@ -397,14 +357,8 @@ def home():
             msg_vndms = format_vndms_message(vndms_data_copy, is_auto=True)
             broadcast_alert(msg_vndms)
 
-    return jsonify({
-        "status": "running", 
-        "active_chats": list(REGISTERED_CHATS),
-        "last_iweather_count": LAST_IWEATHER_COUNT,
-        "sent_vndms_ids": list(SENT_VNDMS_IDS)
-    })
+    return jsonify({"status": "running", "active_chats": list(REGISTERED_CHATS)})
 
-# Webhook nhận lệnh & File từ Telegram
 @app.route(f'/{TELEGRAM_BOT_TOKEN}', methods=['POST'])
 def telegram_webhook():
     update = request.get_json()
@@ -412,64 +366,40 @@ def telegram_webhook():
         message = update["message"]
         chat_id = message["chat"]["id"]
         text = message.get("text", "")
-
-        # Tự động đăng ký Chat ID
         REGISTERED_CHATS.add(chat_id)
 
-        # ----------------------------------------------------
-        # XỬ LÝ 1: NẾU NGƯỜI DÙNG GỬI FILE PDF BẢN TIN
-        # ----------------------------------------------------
+        # 1. Nhận file PDF bản tin
         if "document" in message and message["document"].get("mime_type") == "application/pdf":
-            send_telegram_message(chat_id, "📥 *Đã nhận bản tin PDF.* Đang tự động trích xuất dữ liệu & tạo Infographic...")
-            
+            send_telegram_message(chat_id, "📥 *Đã nhận bản tin PDF.* Đang bóc tách dữ liệu & vẽ Infographic...")
             try:
-                # Tải file PDF từ Telegram về Memory
                 file_id = message["document"]["file_id"]
                 file_info = requests.get(f"{TELEGRAM_API_URL}/getFile?file_id={file_id}").json()
-                
                 if file_info.get("ok"):
                     file_path_str = file_info["result"]["file_path"]
                     download_url = f"https://api.telegram.org/file/bot{TELEGRAM_BOT_TOKEN}/{file_path_str}"
                     pdf_bytes = requests.get(download_url).content
-                    
-                    # 1. Bóc tách JSON
+
                     extracted_data = parse_pdf_bytes_with_ai(pdf_bytes)
-                    
-                    # 2. Render ra file ảnh PNG
                     output_png_path = f"infographic_{chat_id}.png"
                     asyncio.run(render_html_to_png(extracted_data, output_png_path))
-                    
-                    # 3. Gửi ảnh PNG lại cho người dùng
+
                     caption = f"🎨 **INFOGRAPHIC {extracted_data.get('title')}**\n📋 Số hiệu: `{extracted_data.get('doc_number')}`"
                     send_telegram_photo(chat_id, output_png_path, caption=caption)
-                    
-                    # Xóa file tạm
+
                     if os.path.exists(output_png_path):
                         os.remove(output_png_path)
-            
             except Exception as e:
                 send_telegram_message(chat_id, f"❌ Lỗi xử lý file PDF: {str(e)}")
 
-        # ----------------------------------------------------
-        # XỬ LÝ 2: CÁC CÂU LỆNH TRA CỨU VĂN BẢN (IWEATHER / VNDMS)
-        # ----------------------------------------------------
+        # 2. Lệnh tra cứu dông sét & thiên tai
         elif text.startswith("/start") or text.startswith("/dong") or text.startswith("/canhbao") or text.startswith("/thoitiet"):
             send_telegram_message(chat_id, "🔍 *Đang truy vấn dữ liệu từ iWeather & VNDMS...*")
-            
-            # BƯỚC 1: CẢNH BÁO DÔNG SÉT (IWEATHER)
             iweather_data = get_iweather_storm_warning("Thanh Hóa")
-            if iweather_data.get("status") == "success":
-                msg_iweather = format_iweather_message(iweather_data, is_auto=False)
-            else:
-                msg_iweather = f"❌ Lỗi iWeather: {iweather_data.get('message')}"
+            msg_iweather = format_iweather_message(iweather_data, is_auto=False) if iweather_data.get("status") == "success" else f"❌ Lỗi iWeather: {iweather_data.get('message')}"
             send_telegram_message(chat_id, msg_iweather)
 
-            # BƯỚC 2: CẢNH BÁO THỜI TIẾT NGUY HIỂM (VNDMS)
             vndms_data = get_vndms_warning()
-            if vndms_data.get("status") == "success":
-                msg_vndms = format_vndms_message(vndms_data, is_auto=False)
-            else:
-                msg_vndms = f"❌ Lỗi VNDMS: {vndms_data.get('message')}"
+            msg_vndms = format_vndms_message(vndms_data, is_auto=False) if vndms_data.get("status") == "success" else f"❌ Lỗi VNDMS: {vndms_data.get('message')}"
             send_telegram_message(chat_id, msg_vndms)
 
     return "OK", 200
