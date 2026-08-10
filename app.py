@@ -207,7 +207,7 @@ def parse_pdf_bytes_with_ai(pdf_bytes):
         generation_config={"response_mime_type": "application/json"}
     )
 
-    return json.loads(response.text)t)
+    return json.loads(response.text)
     
 async def render_html_to_png(data, output_path):
     """Chuyển đổi HTML thành file PNG bằng Playwright"""
