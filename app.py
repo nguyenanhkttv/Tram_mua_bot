@@ -168,9 +168,9 @@ def parse_pdf_bytes_with_ai(pdf_bytes):
     }
     """
 
-    # Gửi trực tiếp file PDF cho Gemini 2.5 Flash xử lý
+    # Gửi trực tiếp file PDF cho Gemini 1.5 Flash xử lý
     response = gemini_client.models.generate_content(
-        model='gemini-2.5-flash',
+        model='gemini-1.5-flash',
         contents=[
             types.Part.from_bytes(
                 data=pdf_bytes,
