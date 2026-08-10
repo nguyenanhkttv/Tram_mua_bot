@@ -11,14 +11,13 @@ from jinja2 import Template
 from playwright.async_api import async_playwright
 import google.generativeai as genai
 
-# ==================== CẤU HÌNH HỆ THỐNG ====================
+# ==================== CẤU HÌNH ====================
 IWEATHER_STORM_URL = "https://iweather.gov.vn/product/warningstorm?token=null"
 VNDMS_WARNING_URL = "https://vndms.gov.vn/EventDisaster/WarningEvent"
 
 TELEGRAM_BOT_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN", "8587075816:AAHlm9r7mwCjEQlgmx6KjoZ8AE7Vd844x6s")
 TELEGRAM_API_URL = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}"
 
-# Gemini API Key lấy từ Environment Variable trên Render
 GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY", "")
 
 HEADERS_DEFAULT = {
@@ -27,55 +26,53 @@ HEADERS_DEFAULT = {
 
 app = Flask(__name__)
 
-# Lưu danh sách Chat ID nhận thông báo tự động (RAM)
+# Lưu danh sách Chat ID nhận thông báo tự động
 REGISTERED_CHATS = set()
 LAST_IWEATHER_COUNT = 0
 SENT_VNDMS_IDS = set()
 
-# ==================== TEMPLATE HTML & THEMES ====================
+# ==================== TEMPLATE INFOGRAPHIC 2K & FONTAWESOME ====================
 HTML_TEMPLATE_STR = """
 <!DOCTYPE html>
 <html lang="vi">
 <head>
     <meta charset="UTF-8">
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
+    <link href="https://fonts.googleapis.com/css2?family=Roboto:wght@400;500;700;900&display=swap" rel="stylesheet">
     <style>
         :root {
-            --primary-color: {{ theme.primary }};
-            --header-bg: {{ theme.header_bg }};
+            --primary: {{ theme.primary }};
+            --gradient: {{ theme.header_bg }};
             --card-bg: {{ theme.card_bg }};
-            --badge-bg: {{ theme.badge_bg }};
         }
-        body { font-family: 'Segoe UI', Arial, sans-serif; background: #f0f2f5; margin: 0; padding: 15px; display: flex; justify-content: center; }
-        .container { width: 500px; background: #ffffff; border-radius: 16px; box-shadow: 0 10px 25px rgba(0,0,0,0.15); overflow: hidden; border: 2px solid var(--primary-color); }
-        .header { background: var(--header-bg); color: white; padding: 18px; text-align: center; }
-        .header .sub { font-size: 11px; font-weight: 700; text-transform: uppercase; letter-spacing: 1px; opacity: 0.95; }
-        .header h1 { margin: 6px 0; font-size: 20px; font-weight: 800; text-shadow: 0 2px 4px rgba(0,0,0,0.2); }
-        .header .meta { font-size: 11px; opacity: 0.85; font-style: italic; }
-        
-        .content { padding: 18px; color: #2c3e50; }
-        .stats-grid { display: grid; grid-template-columns: repeat({{ stats|length }}, 1fr); gap: 8px; margin-bottom: 16px; }
-        .stat-card { background: var(--card-bg); border-left: 4px solid var(--primary-color); padding: 8px; border-radius: 8px; text-align: center; }
-        .stat-label { font-size: 10px; color: #666; font-weight: bold; text-transform: uppercase; }
-        .stat-value { font-size: 17px; color: var(--primary-color); font-weight: 800; margin: 2px 0; }
-        .stat-note { font-size: 10px; color: #888; }
-
-        .section-title { font-size: 12px; font-weight: 700; color: var(--primary-color); border-bottom: 2px solid var(--card-bg); padding-bottom: 4px; margin: 12px 0 8px 0; text-transform: uppercase; }
-        .area-tags { display: flex; flex-wrap: wrap; gap: 5px; margin-bottom: 12px; }
-        .tag { background: var(--badge-bg); color: #333; font-size: 11px; padding: 4px 8px; border-radius: 10px; font-weight: 600; }
-
-        .advice-box { background: #fff9db; border-left: 4px solid #f59f00; padding: 8px 12px; border-radius: 6px; font-size: 12px; line-height: 1.4; }
-        .advice-list { padding-left: 16px; margin: 4px 0 0 0; }
+        * { box-sizing: border-box; }
+        body { font-family: 'Roboto', sans-serif; background: #f4f6f9; margin: 0; padding: 20px; display: flex; justify-content: center; }
+        .container { width: 540px; background: #ffffff; border-radius: 18px; box-shadow: 0 12px 30px rgba(0,0,0,0.12); overflow: hidden; border: 1px solid #e2e8f0; }
+        .header { background: var(--gradient); color: white; padding: 22px 20px; text-align: center; }
+        .header .agency { font-size: 11px; font-weight: 700; text-transform: uppercase; letter-spacing: 1px; opacity: 0.9; margin-bottom: 5px; }
+        .header h1 { margin: 0; font-size: 21px; font-weight: 900; text-transform: uppercase; line-height: 1.3; }
+        .header .meta { margin-top: 8px; font-size: 11px; opacity: 0.9; font-weight: 500; }
+        .content { padding: 20px; color: #1e293b; }
+        .stats-grid { display: grid; grid-template-columns: repeat({{ stats|length }}, 1fr); gap: 10px; margin-bottom: 18px; }
+        .stat-card { background: var(--card-bg); border-left: 4px solid var(--primary); padding: 10px; border-radius: 8px; text-align: center; }
+        .stat-label { font-size: 10px; color: #64748b; font-weight: 700; text-transform: uppercase; margin-bottom: 3px; }
+        .stat-value { font-size: 17px; color: var(--primary); font-weight: 900; }
+        .stat-note { font-size: 10px; color: #94a3b8; margin-top: 2px; }
+        .section-title { font-size: 12px; font-weight: 700; color: var(--primary); margin: 14px 0 8px 0; text-transform: uppercase; display: flex; align-items: center; gap: 6px; }
+        .area-tags { display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 14px; }
+        .tag { background: #f1f5f9; color: #334155; font-size: 11px; padding: 4px 8px; border-radius: 6px; font-weight: 600; border: 1px solid #e2e8f0; }
+        .advice-box { background: #fffbeb; border: 1px solid #fef3c7; border-left: 4px solid #f59e0b; padding: 10px 12px; border-radius: 8px; font-size: 12px; line-height: 1.5; color: #92400e; }
+        .advice-list { padding-left: 16px; margin: 0; }
         .advice-list li { margin-bottom: 3px; }
-
-        .footer { background: #f8f9fa; padding: 8px; text-align: center; font-size: 10px; color: #666; border-top: 1px solid #eee; }
+        .footer { background: #f8fafc; padding: 10px; text-align: center; font-size: 11px; color: #64748b; border-top: 1px solid #f1f5f9; font-weight: 600; }
     </style>
 </head>
 <body>
 <div class="container">
     <div class="header">
-        <div class="sub">{{ agency|default('ĐÀI KHÍ TƯỢNG THỦY VĂN TỈNH THANH HÓA') }}</div>
+        <div class="agency"><i class="fa-solid fa-building-columns"></i> ĐÀI KHÍ TƯỢNG THỦY VĂN TỈNH THANH HÓA</div>
         <h1>{{ title }}</h1>
-        <div class="meta">Số: {{ doc_number }} | {{ issue_time }}</div>
+        <div class="meta"><i class="fa-solid fa-file-signature"></i> {{ doc_number }} &nbsp;|&nbsp; <i class="fa-solid fa-clock"></i> {{ issue_time }}</div>
     </div>
     <div class="content">
         <div class="stats-grid">
@@ -87,18 +84,16 @@ HTML_TEMPLATE_STR = """
             </div>
             {% endfor %}
         </div>
-
         {% if affected_areas %}
-        <div class="section-title">📍 KHU VỰC / ĐỊA BÀN ẢNH HƯỞNG</div>
+        <div class="section-title"><i class="fa-solid fa-location-dot"></i> KHU VỰC / ĐỊA BÀN ẢNH HƯỞNG</div>
         <div class="area-tags">
             {% for area in affected_areas %}
-            <span class="tag">📍 {{ area }}</span>
+            <span class="tag"><i class="fa-solid fa-location-arrow" style="color: var(--primary); font-size:9px;"></i> {{ area }}</span>
             {% endfor %}
         </div>
         {% endif %}
-
         {% if warnings %}
-        <div class="section-title">⚠️ TÁC ĐỘNG & KHUYẾN CÁO</div>
+        <div class="section-title"><i class="fa-solid fa-triangle-exclamation"></i> TÁC ĐỘNG & KHUYẾN CÁO</div>
         <div class="advice-box">
             <ul class="advice-list">
                 {% for w in warnings %}
@@ -109,7 +104,7 @@ HTML_TEMPLATE_STR = """
         {% endif %}
     </div>
     <div class="footer">
-        Rủi ro thiên tai: <b>{{ risk_level|default('CẤP 1') }}</b> | Render tự động bởi Telegram Bot
+        <i class="fa-solid fa-shield-halved"></i> CẤP ĐỘ RỦI RO THIÊN TAI: <span style="color: var(--primary);">{{ risk_level|default('CẤP 1') }}</span>
     </div>
 </div>
 </body>
@@ -117,76 +112,54 @@ HTML_TEMPLATE_STR = """
 """
 
 THEME_MAP = {
-    "NANG_NONG": {"primary": "#d9381e", "header_bg": "linear-gradient(135deg, #ff4e50, #f9d423)", "card_bg": "#fff0f0", "badge_bg": "#ffe3e3"},
-    "MUA_LON": {"primary": "#0288d1", "header_bg": "linear-gradient(135deg, #00c6ff, #0072ff)", "card_bg": "#e1f5fe", "badge_bg": "#b3e5fc"},
-    "BAO": {"primary": "#7b1fa2", "header_bg": "linear-gradient(135deg, #8e24aa, #ff1744)", "card_bg": "#f3e5f5", "badge_bg": "#e1bee7"},
-    "LU_QUET": {"primary": "#e65100", "header_bg": "linear-gradient(135deg, #f7971e, #ffd200)", "card_bg": "#fff3e0", "badge_bg": "#ffe0b2"},
-    "DONG_LOC": {"primary": "#f57f17", "header_bg": "linear-gradient(135deg, #fbc02d, #7b1fa2)", "card_bg": "#fffde7", "badge_bg": "#fff9c4"}
+    "NANG_NONG": {"primary": "#e11d48", "header_bg": "linear-gradient(135deg, #f43f5e, #fb923c)", "card_bg": "#fff1f2"},
+    "MUA_LON": {"primary": "#0284c7", "header_bg": "linear-gradient(135deg, #0284c7, #38bdf8)", "card_bg": "#f0f9ff"},
+    "BAO": {"primary": "#7c3aed", "header_bg": "linear-gradient(135deg, #7c3aed, #db2777)", "card_bg": "#f5f3ff"},
+    "LU_QUET": {"primary": "#ea580c", "header_bg": "linear-gradient(135deg, #ea580c, #facc15)", "card_bg": "#fff7ed"},
+    "DONG_LOC": {"primary": "#d97706", "header_bg": "linear-gradient(135deg, #d97706, #7c3aed)", "card_bg": "#fffbeb"}
 }
 
-# ==================== BÓC TÁCH DỮ LIỆU PDF VÀ RENDER PNG ====================
+# ==================== BÓC TÁCH GEMINI AI (ĐÃ SỬA CHUẨN MODEL) ====================
 def parse_pdf_bytes_with_ai(pdf_bytes):
-    # 1. Trích xuất text từ PDF bằng pdfplumber
+    if not GEMINI_API_KEY:
+        raise Exception("Chưa cấu hình GEMINI_API_KEY!")
+
+    genai.configure(api_key=GEMINI_API_KEY)
+
     raw_text = ""
     with pdfplumber.open(io.BytesIO(pdf_bytes)) as pdf:
         for page in pdf.pages:
             raw_text += page.extract_text() or ""
 
-    # 2. Thử bóc tách bằng Gemini AI (Ưu tiên gemini-1.5-flash & gemini-1.5-pro)
-    if GEMINI_API_KEY:
-        try:
-            genai.configure(api_key=GEMINI_API_KEY)
-            prompt = f"""
-            Bạn là chuyên gia Khí tượng Thủy văn. Hãy phân tích bản tin KTTV dưới đây và trả về DUY NHẤT một chuỗi JSON chuẩn.
-            
-            Cấu trúc JSON bắt buộc:
-            {{
-              "type": "NANG_NONG" | "MUA_LON" | "BAO" | "LU_QUET" | "DONG_LOC",
-              "title": "TIÊU ĐỀ BẢN TIN (VIẾT HOA)",
-              "doc_number": "Số hiệu bản tin",
-              "issue_time": "Thời gian phát hành",
-              "stats": [
-                 {{"label": "Tên chỉ số", "value": "Giá trị", "note": "Ghi chú ngắn"}}
-              ],
-              "affected_areas": ["Danh sách khu vực/huyện/trạm"],
-              "warnings": ["Khuyên cáo 1", "Khuyên cáo 2"],
-              "risk_level": "Cấp độ rủi ro"
-            }}
+    if not raw_text.strip():
+        raise Exception("Không thể trích xuất chữ từ PDF!")
 
-            Nội dung bản tin PDF:
-            {raw_text}
-            """
+    # Dùng model chuẩn sản xuất chính thức của Google
+    model = genai.GenerativeModel('gemini-1.5-flash')
+    
+    prompt = f"""
+    Bạn là chuyên gia Khí tượng Thủy văn. Hãy phân tích bản tin KTTV dưới đây và xuất ra DUY NHẤT 1 chuỗi JSON chuẩn.
 
-            # Lần lượt thử các model ổn định nhất
-            candidate_models = ['gemini-1.5-flash', 'gemini-1.5-pro', 'gemini-pro']
-            for model_name in candidate_models:
-                try:
-                    model = genai.GenerativeModel(model_name)
-                    response = model.generate_content(
-                        prompt,
-                        generation_config={"response_mime_type": "application/json"}
-                    )
-                    cleaned_json = response.text.replace("```json", "").replace("```", "").strip()
-                    return json.loads(cleaned_json)
-                except Exception as m_err:
-                    print(f"Model {model_name} chưa sẵn sàng: {m_err}")
-                    continue
-        except Exception as ai_err:
-            print(f"Lỗi gọi AI: {ai_err}")
+    Cấu trúc JSON bắt buộc:
+    {{
+      "type": "NANG_NONG" | "MUA_LON" | "BAO" | "LU_QUET" | "DONG_LOC",
+      "title": "TIÊU ĐỀ BẢN TIN (VIẾT HOA)",
+      "doc_number": "Số hiệu bản tin",
+      "issue_time": "Thời gian phát hành",
+      "stats": [
+         {{"label": "Tên chỉ số", "value": "Giá trị", "note": "Ghi chú ngắn"}}
+      ],
+      "affected_areas": ["Danh sách khu vực ngắn gọn"],
+      "warnings": ["Khuyến cáo 1", "Khuyến cáo 2"],
+      "risk_level": "Cấp độ rủi ro"
+    }}
 
-    # 3. Chế độ dự phòng (Fallback) nếu AI lỗi hoặc chưa cài Key
-    return {
-        "type": "NANG_NONG" if "NẮNG NÓNG" in raw_text.upper() else "MUA_LON",
-        "title": "BẢN TIN CẢNH BÁO THỜI TIẾT",
-        "doc_number": "KTTV-THANHHOA",
-        "issue_time": datetime.now().strftime("%H:%M %d/%m/%Y"),
-        "stats": [
-            {"label": "Trạng thái", "value": "Đã ghi nhận", "note": "Xem chi tiết trong file PDF"}
-        ],
-        "affected_areas": ["Địa bàn tỉnh Thanh Hóa"],
-        "warnings": ["Theo dõi diễn biến thời tiết trong các bản tin tiếp theo."],
-        "risk_level": "CẤP 1"
-    }
+    Nội dung bản tin PDF:
+    {raw_text}
+    """
+
+    res = model.generate_content(prompt, generation_config={"response_mime_type": "application/json"})
+    return json.loads(res.text)
 
 async def render_html_to_png(data, output_path):
     bulletin_type = data.get("type", "NANG_NONG")
@@ -196,10 +169,10 @@ async def render_html_to_png(data, output_path):
     rendered_html = template.render(**data, theme=theme)
 
     async with async_playwright() as p:
-        # Bổ sung args --no-sandbox để chạy mượt trên Linux Server
-        browser = await p.chromium.launch(args=["--no-sandbox", "--disable-setuid-sandbox"])
-        page = await browser.new_page(viewport={"width": 550, "height": 850})
+        browser = await p.chromium.launch()
+        page = await browser.new_page(viewport={"width": 580, "height": 850}, device_scale_factor=2)
         await page.set_content(rendered_html)
+        await page.wait_for_timeout(400)
         card = await page.query_selector(".container")
         if card:
             await card.screenshot(path=output_path, type="png")
@@ -207,54 +180,27 @@ async def render_html_to_png(data, output_path):
             await page.screenshot(path=output_path, type="png")
         await browser.close()
 
-# ==================== 1. IWEATHER (DÔNG SÉT) ====================
+# ==================== CÁC HÀM XỬ LÝ IWEATHER & VNDMS (CŨ) ====================
 def get_iweather_storm_warning(province_keyword="Thanh Hóa"):
-    headers = {
-        **HEADERS_DEFAULT,
-        'Referer': 'https://iweather.gov.vn/dashboard?areaRadar=COM&productRadar=CMAX',
-        'Accept': 'application/json, text/plain, */*'
-    }
+    headers = {**HEADERS_DEFAULT, 'Referer': 'https://iweather.gov.vn/dashboard?areaRadar=COM&productRadar=CMAX', 'Accept': 'application/json'}
     now_vn = datetime.utcnow() + timedelta(hours=7)
     try:
         res = requests.get(IWEATHER_STORM_URL, headers=headers, timeout=12)
-        if res.status_code != 200:
-            return {"status": "error", "message": f"Không kết nối được iWeather (HTTP {res.status_code})"}
+        if res.status_code != 200: return {"status": "error", "message": f"HTTP {res.status_code}"}
+        matches = re.findall(r'([^"\[\]\\]+?Tỉnh Thanh Hoá|[^"\[\]\\]+?Tỉnh Thanh Hóa)', res.text, re.IGNORECASE)
+        unique_locs = list(set([m.strip(' ",') for m in matches]))
+        alerts = [{"location": loc, "intensity": "Mây dông/Sét phát triển", "time": now_vn.strftime('%H:%M %d/%m/%Y')} for loc in unique_locs]
+        return {"status": "success", "has_warning": len(alerts) > 0, "count": len(alerts), "alerts": alerts, "updated_at": now_vn.strftime("%H:%M:%S %d/%m/%Y")}
+    except Exception as e: return {"status": "error", "message": str(e)}
 
-        raw_text = res.text
-        matched_alerts = []
-        pattern = r'([^"\[\]\\]+?Tỉnh Thanh Hoá|[^"\[\]\\]+?Tỉnh Thanh Hóa)'
-        matches = re.findall(pattern, raw_text, re.IGNORECASE)
-        unique_locations = list(set([m.strip(' ",') for m in matches]))
-
-        for loc in unique_locations:
-            matched_alerts.append({
-                "location": loc,
-                "intensity": "Mây dông / Sét phát triển",
-                "time": now_vn.strftime('%H:%M %d/%m/%Y')
-            })
-
-        return {
-            "status": "success",
-            "province": province_keyword,
-            "has_warning": len(matched_alerts) > 0,
-            "count": len(matched_alerts),
-            "alerts": matched_alerts,
-            "updated_at": now_vn.strftime("%H:%M:%S %d/%m/%Y")
-        }
-    except Exception as e:
-        return {"status": "error", "message": f"Lỗi iWeather: {str(e)}"}
-
-# ==================== 2. VNDMS (GIÁM SÁT THIÊN TAI) ====================
 def get_vndms_warning():
     now_vn = datetime.utcnow() + timedelta(hours=7)
     try:
         res = requests.get(VNDMS_WARNING_URL, headers=HEADERS_DEFAULT, timeout=12)
-        if res.status_code != 200:
-            return {"status": "error", "message": f"Không kết nối được VNDMS (HTTP {res.status_code})"}
-
+        if res.status_code != 200: return {"status": "error", "message": f"HTTP {res.status_code}"}
         data = res.json()
         alerts = []
-        if isinstance(data, list) and len(data) > 0:
+        if isinstance(data, list):
             for item in data:
                 alerts.append({
                     "id": item.get("Id") or item.get("Code") or str(hash(str(item))),
@@ -263,73 +209,44 @@ def get_vndms_warning():
                     "start_time": item.get("StartDate", "Chưa xác định"),
                     "description": item.get("Description") or item.get("Note") or "Chưa có thông tin chi tiết."
                 })
+        return {"status": "success", "has_warning": len(alerts) > 0, "count": len(alerts), "alerts": alerts, "updated_at": now_vn.strftime("%H:%M:%S %d/%m/%Y")}
+    except Exception as e: return {"status": "error", "message": str(e)}
 
-        return {
-            "status": "success",
-            "has_warning": len(alerts) > 0,
-            "count": len(alerts),
-            "alerts": alerts,
-            "updated_at": now_vn.strftime("%H:%M:%S %d/%m/%Y")
-        }
-    except Exception as e:
-        return {"status": "error", "message": f"Lỗi VNDMS: {str(e)}"}
-
-# ==================== FORMAT CÁC DẠNG TIN NHẮN TELEGRAM ====================
 def format_iweather_message(data, is_auto=False):
     if not data.get("has_warning"):
         return f"⚡ **[RADAR DÔNG SÉT - IWEATHER]**\n🕒 *Cập nhật:* {data['updated_at']}\n\n✅ **AN TOÀN:** Hiện chưa phát hiện mây đối lưu hay nguy cơ dông sét tại Thanh Hóa."
-    
     header = "⚠️ **[CẢNH BÁO TỰ ĐỘNG: DÔNG SÉT TỈNH THANH HOÁ]**" if is_auto else "⚡ **[CẢNH BÁO MÂY DÔNG & SÉT - IWEATHER]**"
-    msg = f"{header}\n"
-    msg += f"🕒 *Thời gian quét:* `{data['updated_at']}`\n"
-    msg += f"📡 *Tổng số vùng phát hiện:* **{data['count']} khu vực**\n"
-    msg += "───────────────────\n"
-    for idx, alert in enumerate(data['alerts'], 1):
-        msg += f"🌩️ **{idx}.** {alert['location']}\n"
-    msg += "───────────────────\n"
-    msg += "🌐 [Mở bản đồ Radar CMAX](https://iweather.gov.vn/dashboard?areaRadar=COM&productRadar=CMAX)"
+    msg = f"{header}\n🕒 *Thời gian quét:* `{data['updated_at']}`\n📡 *Tổng số vùng:* **{data['count']} khu vực**\n───────────────────\n"
+    for idx, alert in enumerate(data['alerts'], 1): msg += f"🌩️ **{idx}.** {alert['location']}\n"
+    msg += "───────────────────\n🌐 [Mở bản đồ Radar CMAX](https://iweather.gov.vn/dashboard?areaRadar=COM&productRadar=CMAX)"
     return msg
 
 def format_vndms_message(data, is_auto=False):
     if not data.get("has_warning"):
         return f"🏛️ **[GIÁM SÁT THIÊN TAI - VNDMS]**\n🕒 *Cập nhật:* {data['updated_at']}\n\n🟢 **KHÔNG CÓ CẢNH BÁO NÓNG:** Hệ thống chưa ghi nhận sự kiện thiên tai khẩn cấp nào."
-
     header = "🚨 **[CẢNH BÁO KHẨN CẤP TỪ VNDMS]**" if is_auto else "🏛️ **[CẢNH BÁO THỜI TIẾT NGUY HIỂM - VNDMS]**"
-    msg = f"{header}\n"
-    msg += f"🕒 *Cập nhật:* `{data['updated_at']}`\n"
-    msg += f"📋 *Số bản tin hiện tại:* **{data['count']} tin**\n\n"
+    msg = f"{header}\n🕒 *Cập nhật:* `{data['updated_at']}`\n📋 *Số bản tin:* **{data['count']} tin**\n\n"
     for idx, alert in enumerate(data['alerts'], 1):
-        msg += f"🔻 **BẢN TIN {idx}: {alert['title'].upper()}**\n"
-        msg += f"⏱ **Bắt đầu:** {alert['start_time']}\n"
-        msg += f"⚠️ **Cấp độ rủi ro:** `{alert['risk_level']}`\n"
-        msg += f"📝 **Nội dung:** {alert['description']}\n"
-        msg += "▫️▫️▫️▫️▫️▫️▫️▫️▫️\n"
+        msg += f"🔻 **BẢN TIN {idx}: {alert['title'].upper()}**\n⏱ **Bắt đầu:** {alert['start_time']}\n⚠️ **Cấp độ rủi ro:** `{alert['risk_level']}`\n📝 **Nội dung:** {alert['description']}\n▫️▫️▫️▫️▫️▫️▫️▫️▫️\n"
     msg += "🌐 *Nguồn:* Cục QLĐĐ & PCTT (vndms.gov.vn)"
     return msg
 
 def send_telegram_message(chat_id, text):
     url = f"{TELEGRAM_API_URL}/sendMessage"
-    payload = {"chat_id": chat_id, "text": text, "parse_mode": "Markdown", "disable_web_page_preview": True}
-    try:
-        requests.post(url, json=payload, timeout=5)
-    except Exception as e:
-        print(f"Lỗi gửi Telegram: {e}")
+    try: requests.post(url, json={"chat_id": chat_id, "text": text, "parse_mode": "Markdown", "disable_web_page_preview": True}, timeout=5)
+    except Exception as e: print(e)
 
 def send_telegram_photo(chat_id, photo_path, caption=""):
     url = f"{TELEGRAM_API_URL}/sendPhoto"
     try:
         with open(photo_path, 'rb') as photo_file:
-            payload = {"chat_id": chat_id, "caption": caption, "parse_mode": "Markdown"}
-            files = {"photo": photo_file}
-            requests.post(url, data=payload, files=files, timeout=30)
-    except Exception as e:
-        print(f"Lỗi gửi ảnh Telegram: {e}")
+            requests.post(url, data={"chat_id": chat_id, "caption": caption, "parse_mode": "Markdown"}, files={"photo": photo_file}, timeout=30)
+    except Exception as e: print(e)
 
 def broadcast_alert(text):
-    for chat_id in REGISTERED_CHATS:
-        send_telegram_message(chat_id, text)
+    for chat_id in REGISTERED_CHATS: send_telegram_message(chat_id, text)
 
-# ==================== WEB ROUTES & WEBHOOK ====================
+# ==================== ROUTE CHẠY CRON TỰ ĐỘNG KHÔNG MẤT ====================
 @app.route('/')
 def home():
     global LAST_IWEATHER_COUNT, SENT_VNDMS_IDS
@@ -337,8 +254,7 @@ def home():
     if iweather_data.get("status") == "success":
         current_count = iweather_data.get("count", 0)
         if iweather_data.get("has_warning") and current_count != LAST_IWEATHER_COUNT:
-            msg_iweather = format_iweather_message(iweather_data, is_auto=True)
-            broadcast_alert(msg_iweather)
+            broadcast_alert(format_iweather_message(iweather_data, is_auto=True))
             LAST_IWEATHER_COUNT = current_count
         elif not iweather_data.get("has_warning"):
             LAST_IWEATHER_COUNT = 0
@@ -346,17 +262,16 @@ def home():
     vndms_data = get_vndms_warning()
     if vndms_data.get("status") == "success" and vndms_data.get("has_warning"):
         new_alerts = [a for a in vndms_data['alerts'] if a['id'] not in SENT_VNDMS_IDS]
-        for a in new_alerts:
-            SENT_VNDMS_IDS.add(a['id'])
         if new_alerts:
-            vndms_data_copy = dict(vndms_data)
-            vndms_data_copy['alerts'] = new_alerts
-            vndms_data_copy['count'] = len(new_alerts)
-            msg_vndms = format_vndms_message(vndms_data_copy, is_auto=True)
-            broadcast_alert(msg_vndms)
+            for a in new_alerts: SENT_VNDMS_IDS.add(a['id'])
+            v_copy = dict(vndms_data)
+            v_copy['alerts'] = new_alerts
+            v_copy['count'] = len(new_alerts)
+            broadcast_alert(format_vndms_message(v_copy, is_auto=True))
 
     return jsonify({"status": "running", "active_chats": list(REGISTERED_CHATS)})
 
+# ==================== TELEGRAM WEBHOOK ====================
 @app.route(f'/{TELEGRAM_BOT_TOKEN}', methods=['POST'])
 def telegram_webhook():
     update = request.get_json()
@@ -364,41 +279,37 @@ def telegram_webhook():
         message = update["message"]
         chat_id = message["chat"]["id"]
         text = message.get("text", "")
+
         REGISTERED_CHATS.add(chat_id)
 
-        # 1. Nhận file PDF bản tin
+        # 1. Nếu gửi File PDF
         if "document" in message and message["document"].get("mime_type") == "application/pdf":
-            send_telegram_message(chat_id, "📥 *Đã nhận bản tin PDF.* Đang bóc tách dữ liệu & vẽ Infographic...")
+            send_telegram_message(chat_id, "📥 *Đã nhận PDF.* Đang bóc tách & tạo Infographic 2K...")
             try:
                 file_id = message["document"]["file_id"]
                 file_info = requests.get(f"{TELEGRAM_API_URL}/getFile?file_id={file_id}").json()
                 if file_info.get("ok"):
-                    file_path_str = file_info["result"]["file_path"]
-                    download_url = f"https://api.telegram.org/file/bot{TELEGRAM_BOT_TOKEN}/{file_path_str}"
+                    download_url = f"https://api.telegram.org/file/bot{TELEGRAM_BOT_TOKEN}/{file_info['result']['file_path']}"
                     pdf_bytes = requests.get(download_url).content
-
+                    
                     extracted_data = parse_pdf_bytes_with_ai(pdf_bytes)
                     output_png_path = f"infographic_{chat_id}.png"
                     asyncio.run(render_html_to_png(extracted_data, output_png_path))
-
-                    caption = f"🎨 **INFOGRAPHIC {extracted_data.get('title')}**\n📋 Số hiệu: `{extracted_data.get('doc_number')}`"
+                    
+                    caption = f"🎨 **{extracted_data.get('title')}**\n📋 Số: `{extracted_data.get('doc_number')}`"
                     send_telegram_photo(chat_id, output_png_path, caption=caption)
-
-                    if os.path.exists(output_png_path):
-                        os.remove(output_png_path)
+                    if os.path.exists(output_png_path): os.remove(output_png_path)
             except Exception as e:
-                send_telegram_message(chat_id, f"❌ Lỗi xử lý file PDF: {str(e)}")
+                send_telegram_message(chat_id, f"❌ Lỗi xử lý bản tin: {str(e)}")
 
-        # 2. Lệnh tra cứu dông sét & thiên tai
+        # 2. Các câu lệnh tra cứu văn bản
         elif text.startswith("/start") or text.startswith("/dong") or text.startswith("/canhbao") or text.startswith("/thoitiet"):
-            send_telegram_message(chat_id, "🔍 *Đang truy vấn dữ liệu từ iWeather & VNDMS...*")
+            send_telegram_message(chat_id, "🔍 *Đang quét dữ liệu iWeather & VNDMS...*")
             iweather_data = get_iweather_storm_warning("Thanh Hóa")
-            msg_iweather = format_iweather_message(iweather_data, is_auto=False) if iweather_data.get("status") == "success" else f"❌ Lỗi iWeather: {iweather_data.get('message')}"
-            send_telegram_message(chat_id, msg_iweather)
-
+            send_telegram_message(chat_id, format_iweather_message(iweather_data, is_auto=False))
+            
             vndms_data = get_vndms_warning()
-            msg_vndms = format_vndms_message(vndms_data, is_auto=False) if vndms_data.get("status") == "success" else f"❌ Lỗi VNDMS: {vndms_data.get('message')}"
-            send_telegram_message(chat_id, msg_vndms)
+            send_telegram_message(chat_id, format_vndms_message(vndms_data, is_auto=False))
 
     return "OK", 200
 
