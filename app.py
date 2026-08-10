@@ -73,7 +73,7 @@ def format_station_message(data):
     online_count = sum(1 for s in stations if s["status"])
     offline_count = len(stations) - online_count
     
-    msg = f"📡 **[TRẠNG THÁI HỆ THỐNG TRẠM MẠNG NƯỚC]**\n"
+    msg = f"📡 **[TRẠNG THÁI HỆ THỐNG TRẠM THỦY VĂN TỰ ĐỘNG THANH HÓA]**\n"
     msg += f"🕒 *Cập nhật:* `{data['updated_at']}`\n"
     msg += f"🟢 Đang kết nối: **{online_count}** | 🔴 Mất kết nối: **{offline_count}**\n"
     msg += "───────────────────\n"
