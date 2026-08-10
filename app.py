@@ -3,6 +3,7 @@ import re
 import io
 import json
 import asyncio
+import threading
 import requests
 import pdfplumber
 from datetime import datetime, timedelta
@@ -292,7 +293,31 @@ def home():
 
     return jsonify({"status": "running", "active_chats": list(REGISTERED_CHATS)})
 
-# ==================== TELEGRAM WEBHOOK ====================
+# ==================== HÀM XỬ LÝ PDF CHẠY NGẦM (BACKGROUND THREAD) ====================
+def process_pdf_task(chat_id, pdf_bytes):
+    """Xử lý AI + Vẽ ảnh ngầm để không làm đơ Telegram Webhook"""
+    try:
+        # 1. Trích xuất dữ liệu bằng REST API Gemini
+        extracted_data = parse_pdf_bytes_with_ai(pdf_bytes)
+        
+        # 2. Tạo file ảnh PNG 2K bằng Playwright
+        output_png_path = f"infographic_{chat_id}.png"
+        asyncio.run(render_html_to_png(extracted_data, output_png_path))
+        
+        # 3. Gửi ảnh kết quả về Telegram
+        caption = f"🎨 **{extracted_data.get('title')}**\n📋 Số hiệu: `{extracted_data.get('doc_number')}`"
+        send_telegram_photo(chat_id, output_png_path, caption=caption)
+        
+        # Dọn dẹp file tạm
+        if os.path.exists(output_png_path):
+            os.remove(output_png_path)
+
+    except Exception as e:
+        # Nếu có lỗi sẽ nhắn ngay về Telegram
+        send_telegram_message(chat_id, f"❌ Lỗi xử lý bản tin: {str(e)}")
+
+
+# ==================== TELEGRAM WEBHOOK (XỬ LÝ TỨC THÌ) ====================
 @app.route(f'/{TELEGRAM_BOT_TOKEN}', methods=['POST'])
 def telegram_webhook():
     update = request.get_json()
@@ -303,29 +328,27 @@ def telegram_webhook():
 
         REGISTERED_CHATS.add(chat_id)
 
-        # 1. Nếu gửi File PDF
+        # 1. Nếu người dùng gửi file PDF
         if "document" in message and message["document"].get("mime_type") == "application/pdf":
             send_telegram_message(chat_id, "📥 *Đã nhận PDF.* Đang bóc tách & tạo Infographic 2K...")
             try:
                 file_id = message["document"]["file_id"]
                 file_info = requests.get(f"{TELEGRAM_API_URL}/getFile?file_id={file_id}").json()
+                
                 if file_info.get("ok"):
                     download_url = f"https://api.telegram.org/file/bot{TELEGRAM_BOT_TOKEN}/{file_info['result']['file_path']}"
                     pdf_bytes = requests.get(download_url).content
                     
-                    extracted_data = parse_pdf_bytes_with_ai(pdf_bytes)
-                    output_png_path = f"infographic_{chat_id}.png"
-                    asyncio.run(render_html_to_png(extracted_data, output_png_path))
-                    
-                    caption = f"🎨 **{extracted_data.get('title')}**\n📋 Số: `{extracted_data.get('doc_number')}`"
-                    send_telegram_photo(chat_id, output_png_path, caption=caption)
-                    if os.path.exists(output_png_path): os.remove(output_png_path)
+                    # 🔥 KÍCH HOẠT LUỒNG NGẦM TẠI ĐÂY (Giải phóng Telegram lập tức)
+                    threading.Thread(target=process_pdf_task, args=(chat_id, pdf_bytes)).start()
+            
             except Exception as e:
-                send_telegram_message(chat_id, f"❌ Lỗi xử lý bản tin: {str(e)}")
+                send_telegram_message(chat_id, f"❌ Lỗi tải file PDF: {str(e)}")
 
-        # 2. Các câu lệnh tra cứu văn bản
+        # 2. Các câu lệnh tra cứu văn bản (/start, /dong, /canhbao)
         elif text.startswith("/start") or text.startswith("/dong") or text.startswith("/canhbao") or text.startswith("/thoitiet"):
             send_telegram_message(chat_id, "🔍 *Đang quét dữ liệu iWeather & VNDMS...*")
+            
             iweather_data = get_iweather_storm_warning("Thanh Hóa")
             send_telegram_message(chat_id, format_iweather_message(iweather_data, is_auto=False))
             
