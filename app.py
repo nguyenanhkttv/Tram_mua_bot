@@ -4,22 +4,12 @@ import io
 import json
 import asyncio
 import requests
-import subprocess
 import pdfplumber
 from datetime import datetime, timedelta
 from flask import Flask, request, jsonify
 from jinja2 import Template
 from playwright.async_api import async_playwright
 import google.generativeai as genai
-
-# =========================================================
-# TỰ ĐỘNG CÀI CHROMIUM KHI SERVER RENDER KHỞI ĐỘNG
-# =========================================================
-try:
-    subprocess.run(["playwright", "install", "chromium"], check=True)
-    subprocess.run(["playwright", "install-deps"], check=True)
-except Exception as e:
-    print(f"Lưu ý Playwright Chromium: {e}")
 
 # ==================== CẤU HÌNH HỆ THỐNG ====================
 IWEATHER_STORM_URL = "https://iweather.gov.vn/product/warningstorm?token=null"
@@ -28,7 +18,7 @@ VNDMS_WARNING_URL = "https://vndms.gov.vn/EventDisaster/WarningEvent"
 TELEGRAM_BOT_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN", "8587075816:AAHlm9r7mwCjEQlgmx6KjoZ8AE7Vd844x6s")
 TELEGRAM_API_URL = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}"
 
-# Gemini API Key lấy từ Variable của Render hoặc cài trực tiếp
+# Gemini API Key lấy từ Environment Variable trên Render
 GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY", "")
 
 HEADERS_DEFAULT = {
@@ -37,7 +27,7 @@ HEADERS_DEFAULT = {
 
 app = Flask(__name__)
 
-# Lưu danh sách Chat ID nhận thông báo tự động (lưu tạm RAM)
+# Lưu danh sách Chat ID nhận thông báo tự động (RAM)
 REGISTERED_CHATS = set()
 LAST_IWEATHER_COUNT = 0
 SENT_VNDMS_IDS = set()
@@ -136,60 +126,67 @@ THEME_MAP = {
 
 # ==================== BÓC TÁCH DỮ LIỆU PDF VÀ RENDER PNG ====================
 def parse_pdf_bytes_with_ai(pdf_bytes):
-    if not GEMINI_API_KEY:
-        raise Exception("Chưa cài đặt GEMINI_API_KEY trong Environment Variables!")
-
-    genai.configure(api_key=GEMINI_API_KEY)
-
     # 1. Trích xuất text từ PDF bằng pdfplumber
     raw_text = ""
     with pdfplumber.open(io.BytesIO(pdf_bytes)) as pdf:
         for page in pdf.pages:
             raw_text += page.extract_text() or ""
 
-    # 2. Tự động lấy tên model khả dụng cho API Key
-    valid_model_name = None
-    try:
-        for m in genai.list_models():
-            if 'generateContent' in m.supported_generation_methods:
-                if 'flash' in m.name:
-                    valid_model_name = m.name
-                    break
-                valid_model_name = m.name
-    except Exception as e:
-        print(f"Lỗi truy vấn list_models: {e}")
+    # 2. Thử bóc tách bằng Gemini AI (Ưu tiên gemini-1.5-flash & gemini-1.5-pro)
+    if GEMINI_API_KEY:
+        try:
+            genai.configure(api_key=GEMINI_API_KEY)
+            prompt = f"""
+            Bạn là chuyên gia Khí tượng Thủy văn. Hãy phân tích bản tin KTTV dưới đây và trả về DUY NHẤT một chuỗi JSON chuẩn.
+            
+            Cấu trúc JSON bắt buộc:
+            {{
+              "type": "NANG_NONG" | "MUA_LON" | "BAO" | "LU_QUET" | "DONG_LOC",
+              "title": "TIÊU ĐỀ BẢN TIN (VIẾT HOA)",
+              "doc_number": "Số hiệu bản tin",
+              "issue_time": "Thời gian phát hành",
+              "stats": [
+                 {{"label": "Tên chỉ số", "value": "Giá trị", "note": "Ghi chú ngắn"}}
+              ],
+              "affected_areas": ["Danh sách khu vực/huyện/trạm"],
+              "warnings": ["Khuyên cáo 1", "Khuyên cáo 2"],
+              "risk_level": "Cấp độ rủi ro"
+            }}
 
-    if not valid_model_name:
-        valid_model_name = "models/gemini-1.5-flash"
+            Nội dung bản tin PDF:
+            {raw_text}
+            """
 
-    prompt = f"""
-    Bạn là chuyên gia Khí tượng Thủy văn. Hãy phân tích bản tin KTTV dưới đây và trả về DUY NHẤT một chuỗi JSON chuẩn.
-    
-    Cấu trúc JSON bắt buộc:
-    {{
-      "type": "NANG_NONG" | "MUA_LON" | "BAO" | "LU_QUET" | "DONG_LOC",
-      "title": "TIÊU ĐỀ BẢN TIN (VIẾT HOA)",
-      "doc_number": "Số hiệu bản tin",
-      "issue_time": "Thời gian phát hành",
-      "stats": [
-         {{"label": "Tên chỉ số", "value": "Giá trị", "note": "Ghi chú ngắn"}}
-      ],
-      "affected_areas": ["Danh sách khu vực/huyện/trạm"],
-      "warnings": ["Khuyên cáo 1", "Khuyên cáo 2"],
-      "risk_level": "Cấp độ rủi ro"
-    }}
+            # Lần lượt thử các model ổn định nhất
+            candidate_models = ['gemini-1.5-flash', 'gemini-1.5-pro', 'gemini-pro']
+            for model_name in candidate_models:
+                try:
+                    model = genai.GenerativeModel(model_name)
+                    response = model.generate_content(
+                        prompt,
+                        generation_config={"response_mime_type": "application/json"}
+                    )
+                    cleaned_json = response.text.replace("```json", "").replace("```", "").strip()
+                    return json.loads(cleaned_json)
+                except Exception as m_err:
+                    print(f"Model {model_name} chưa sẵn sàng: {m_err}")
+                    continue
+        except Exception as ai_err:
+            print(f"Lỗi gọi AI: {ai_err}")
 
-    Nội dung bản tin PDF:
-    {raw_text}
-    """
-
-    model = genai.GenerativeModel(valid_model_name)
-    response = model.generate_content(
-        prompt,
-        generation_config={"response_mime_type": "application/json"}
-    )
-
-    return json.loads(response.text)
+    # 3. Chế độ dự phòng (Fallback) nếu AI lỗi hoặc chưa cài Key
+    return {
+        "type": "NANG_NONG" if "NẮNG NÓNG" in raw_text.upper() else "MUA_LON",
+        "title": "BẢN TIN CẢNH BÁO THỜI TIẾT",
+        "doc_number": "KTTV-THANHHOA",
+        "issue_time": datetime.now().strftime("%H:%M %d/%m/%Y"),
+        "stats": [
+            {"label": "Trạng thái", "value": "Đã ghi nhận", "note": "Xem chi tiết trong file PDF"}
+        ],
+        "affected_areas": ["Địa bàn tỉnh Thanh Hóa"],
+        "warnings": ["Theo dõi diễn biến thời tiết trong các bản tin tiếp theo."],
+        "risk_level": "CẤP 1"
+    }
 
 async def render_html_to_png(data, output_path):
     bulletin_type = data.get("type", "NANG_NONG")
@@ -199,7 +196,8 @@ async def render_html_to_png(data, output_path):
     rendered_html = template.render(**data, theme=theme)
 
     async with async_playwright() as p:
-        browser = await p.chromium.launch()
+        # Bổ sung args --no-sandbox để chạy mượt trên Linux Server
+        browser = await p.chromium.launch(args=["--no-sandbox", "--disable-setuid-sandbox"])
         page = await browser.new_page(viewport={"width": 550, "height": 850})
         await page.set_content(rendered_html)
         card = await page.query_selector(".container")
