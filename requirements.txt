@@ -9,4 +9,4 @@ html2image
 pdfplumber
 jinja2
 playwright
-google-genai
+google-generativeai
