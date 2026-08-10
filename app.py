@@ -244,35 +244,52 @@ def telegram_webhook():
     if update and "message" in update:
         message = update["message"]
         chat_id = message["chat"]["id"]
-        text = message.get("text", "")
+        text = message.get("text", "").strip().lower()
 
-        # Tự động ghi nhớ Chat ID người dùng
+        # Tự động ghi nhớ Chat ID người dùng để gửi cảnh báo tự động
         REGISTERED_CHATS.add(chat_id)
 
-        # Trả lời lệnh tra cứu danh sách trạm
+        # 1. LỆNH CHỈ TRA CỨU TRẠM
         if text.startswith("/tram") or text.startswith("/thietbi"):
-            send_telegram_message(chat_id, "🔍 *Đang kiểm tra kết nối các trạm...*")
+            send_telegram_message(chat_id, "🔍 *Đang kiểm tra kết nối các trạm đo...*")
             st_data = get_station_status()
             send_telegram_message(chat_id, format_station_message(st_data))
 
-        # Trả lời câu lệnh tổng hợp/thời tiết
-        elif text.startswith("/start") or text.startswith("/dong") or text.startswith("/canhbao") or text.startswith("/thoitiet"):
-            send_telegram_message(chat_id, "🔍 *Đang quét dữ liệu Radar, Thiên tai & Trạm đo...*")
-            
-            # 1. Trả về thông tin Trạm
-            st_data = get_station_status()
-            send_telegram_message(chat_id, format_station_message(st_data))
-
-            # 2. Trả về thông tin Dông Sét
+        # 2. LỆNH CHỈ TRA CỨU DÔNG SÉT
+        elif text.startswith("/dong"):
+            send_telegram_message(chat_id, "⚡ *Đang quét Radar Dông Sét iWeather...*")
             iweather_data = get_iweather_storm_warning("Thanh Hóa")
             send_telegram_message(chat_id, format_iweather_message(iweather_data, is_auto=False))
-            
-            # 3. Trả về thông tin Cảnh báo VNDMS
+
+        # 3. LỆNH CHỈ TRA CỨU CẢNH BÁO THIÊN TAI (VNDMS)
+        elif text.startswith("/thientai") or text.startswith("/canhbao"):
+            send_telegram_message(chat_id, "🏛️ *Đang lấy bản tin thiên tai từ VNDMS...*")
+            vndms_data = get_vndms_warning()
+            send_telegram_message(chat_id, format_vndms_message(vndms_data, is_auto=False))
+
+        # 4. LỆNH TỔNG HỢP (/start HOẶC /tong)
+        elif text.startswith("/start") or text.startswith("/tong") or text.startswith("/thoitiet"):
+            welcome_msg = (
+                "👋 **HỆ THỐNG GIÁM SÁT & CẢNH BÁO TỰ ĐỘNG**\n\n"
+                "Danh sách các câu lệnh tra cứu:\n"
+                "🔹 `/tram` - Kiểm tra kết nối các Trạm đo\n"
+                "🔹 `/dong` - Quét mây dông, sét (iWeather)\n"
+                "🔹 `/thientai` - Tin cảnh báo thiên tai (VNDMS)\n"
+                "🔹 `/tong` - Báo cáo tổng hợp tất cả\n\n"
+                "⏳ *Đang tiến hành tổng hợp dữ liệu...*"
+            )
+            send_telegram_message(chat_id, welcome_msg)
+
+            # --- Trả kết quả 1: Trạm ---
+            st_data = get_station_status()
+            send_telegram_message(chat_id, format_station_message(st_data))
+
+            # --- Trả kết quả 2: Dông Sét ---
+            iweather_data = get_iweather_storm_warning("Thanh Hóa")
+            send_telegram_message(chat_id, format_iweather_message(iweather_data, is_auto=False))
+
+            # --- Trả kết quả 3: Thiên tai ---
             vndms_data = get_vndms_warning()
             send_telegram_message(chat_id, format_vndms_message(vndms_data, is_auto=False))
 
     return "OK", 200
-
-if __name__ == "__main__":
-    port = int(os.environ.get("PORT", 5000))
-    app.run(host="0.0.0.0", port=port)
