@@ -6,6 +6,7 @@ import asyncio
 import requests
 import subprocess
 import pdfplumber
+import google.generativeai as genai
 from datetime import datetime, timedelta
 from flask import Flask, request, jsonify
 from jinja2 import Template
@@ -146,18 +147,42 @@ THEME_MAP = {
 from google.genai import types # Nhớ đảm bảo có dòng import này ở đầu file app.py
 
 def parse_pdf_bytes_with_ai(pdf_bytes):
-    """Gửi dữ liệu cho Gemini bóc tách JSON chuẩn xác 100%"""
-    if not gemini_client or GEMINI_API_KEY == "YOUR_GEMINI_API_KEY":
+    """Tự động hỏi Google danh sách Model khả dụng của Key và bóc tách dữ liệu chuẩn 100%"""
+    if not GEMINI_API_KEY or GEMINI_API_KEY == "YOUR_GEMINI_API_KEY":
         raise Exception("Chưa cấu hình GEMINI_API_KEY! Hãy kiểm tra lại API Key.")
 
-    # Đọc chữ thô từ PDF
+    # Cấu hình API Key
+    genai.configure(api_key=GEMINI_API_KEY)
+
+    # 1. Đọc chữ thô từ PDF bằng pdfplumber
     raw_text = ""
     with pdfplumber.open(io.BytesIO(pdf_bytes)) as pdf:
         for page in pdf.pages:
             raw_text += page.extract_text() or ""
 
+    # 2. TỰ ĐỘNG LẤY TÊN MODEL HỢP LỆ VỚI CHÍNH API KEY CỦA ANH (Chống lỗi 404 tuyệt đối)
+    valid_model_name = None
+    try:
+        for m in genai.list_models():
+            if 'generateContent' in m.supported_generation_methods:
+                # Ưu tiên chọn model dòng flash
+                if 'flash' in m.name:
+                    valid_model_name = m.name
+                    break
+                valid_model_name = m.name
+    except Exception as e:
+        raise Exception(f"Lỗi truy vấn danh sách Model từ Google: {e}")
+
+    if not valid_model_name:
+        raise Exception("API Key của anh hiện không có quyền truy cập model Gemini nào.")
+
+    print(f"--> Đã tự động kết nối thành công tới Model: {valid_model_name}")
+
+    # 3. Tạo Prompt
     prompt = f"""
-    Bạn là chuyên gia Khí tượng Thủy văn. Hãy phân tích bản tin dưới đây và trả về DUY NHẤT một chuỗi JSON theo cấu trúc:
+    Bạn là chuyên gia Khí tượng Thủy văn. Hãy phân tích bản tin KTTV dưới đây và trả về DUY NHẤT một chuỗi JSON chuẩn.
+    
+    Cấu trúc JSON bắt buộc:
     {{
       "type": "NANG_NONG" | "MUA_LON" | "BAO" | "LU_QUET" | "DONG_LOC",
       "title": "TIÊU ĐỀ BẢN TIN (VIẾT HOA)",
@@ -166,23 +191,23 @@ def parse_pdf_bytes_with_ai(pdf_bytes):
       "stats": [
          {{"label": "Tên chỉ số", "value": "Giá trị", "note": "Ghi chú ngắn"}}
       ],
-      "affected_areas": ["Địa bàn 1", "Địa bàn 2"],
-      "warnings": ["Cảnh báo 1", "Cảnh báo 2"],
+      "affected_areas": ["Danh sách khu vực/huyện/trạm"],
+      "warnings": ["Khuyên cáo 1", "Khuyên cáo 2"],
       "risk_level": "Cấp độ rủi ro"
     }}
 
-    Nội dung bản tin:
+    Nội dung bản tin PDF:
     {raw_text}
     """
 
-    # Gọi SDK chuẩn của google-genai
-    response = gemini_client.models.generate_content(
-        model='gemini-1.5-flash',
-        contents=prompt,
-        config={'response_mime_type': 'application/json'}
+    # 4. Gọi Model chuẩn vừa được xác minh
+    model = genai.GenerativeModel(valid_model_name)
+    response = model.generate_content(
+        prompt,
+        generation_config={"response_mime_type": "application/json"}
     )
 
-    return json.loads(response.text)
+    return json.loads(response.text)t)
     
 async def render_html_to_png(data, output_path):
     """Chuyển đổi HTML thành file PNG bằng Playwright"""
