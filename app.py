@@ -10,27 +10,33 @@ from datetime import datetime, timedelta
 from flask import Flask, request, jsonify
 from jinja2 import Template
 from playwright.async_api import async_playwright
-from google import genai
 
-# =========================================================
-# TỰ ĐỘNG TẢI CHROMIUM CHO PLAYWRIGHT KHI SERVER KHỞI ĐỘNG
-# ==========================================
+# 1. KHAI BÁO THƯ VIỆN GEMINI AI (Thêm 2 dòng này để hết gạch đỏ)
+from google import genai
+from google.genai import types
+
+# 2. TỰ ĐỘNG TẢI CHROMIUM CHO PLAYWRIGHT
 try:
     subprocess.run(["playwright", "install", "chromium"], check=True)
     subprocess.run(["playwright", "install-deps"], check=True)
 except Exception as e:
     print(f"Lưu ý cài Playwright Chromium: {e}")
 
-# ==================== CẤU HÌNH ====================
+# 3. CẤU HÌNH URL & BOT TOKEN
 IWEATHER_STORM_URL = "https://iweather.gov.vn/product/warningstorm?token=null"
 VNDMS_WARNING_URL = "https://vndms.gov.vn/EventDisaster/WarningEvent"
 
 TELEGRAM_BOT_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN", "8587075816:AAHlm9r7mwCjEQlgmx6KjoZ8AE7Vd844x6s")
 TELEGRAM_API_URL = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}"
 
-# Gemini API Key (Thêm vào Biến môi trường hoặc điền trực tiếp)
-GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY", "YOUR_GEMINI_API_KEY")
-gemini_client = genai.Client(api_key=GEMINI_API_KEY) if GEMINI_API_KEY != "YOUR_GEMINI_API_KEY" else None
+# 4. KHAI BÁO GEMINI API KEY & KHỞI TẠO CLIENT
+GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY")
+
+try:
+    gemini_client = genai.Client(api_key=GEMINI_API_KEY)
+except Exception as e:
+    print(f"Lỗi khởi tạo Gemini Client: {e}")
+    gemini_client = None
 
 HEADERS_DEFAULT = {
     'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
@@ -137,61 +143,46 @@ THEME_MAP = {
 
 # ==================== HÀM BÓC TÁCH PDF & RENDER INFOGRAPHIC ====================
 
+from google.genai import types # Nhớ đảm bảo có dòng import này ở đầu file app.py
+
 def parse_pdf_bytes_with_ai(pdf_bytes):
-    """Đọc chữ từ PDF và dùng Gemini AI bóc tách JSON"""
-    raw_text = ""
-    with pdfplumber.open(io.BytesIO(pdf_bytes)) as pdf:
-        for page in pdf.pages:
-            raw_text += page.extract_text() or ""
-
+    """Gửi trực tiếp PDF byte cho Gemini bóc tách JSON chuẩn xác 100%"""
     if not gemini_client:
-        # Giả lập mẫu nếu chưa cấu hình GEMINI_API_KEY
-        return {
-            "type": "NANG_NONG",
-            "title": "CẢNH BÁO NẮNG NÓNG TỈNH THANH HÓA",
-            "doc_number": "NONG-134/14h00/THOA",
-            "issue_time": "14:00 10/08/2026",
-            "stats": [
-                {"label": "Nhiệt độ cao nhất", "value": "35 - 37°C", "note": "Có nơi >37°C"},
-                {"label": "Độ ẩm thấp nhất", "value": "50 - 60%", "note": "Khô nóng"},
-                {"label": "Khung giờ nóng", "value": "11:00 - 17:00", "note": "Đỉnh điểm"}
-            ],
-            "affected_areas": ["Mường Lát", "Quan Sơn", "Hồi Xuân", "Cẩm Thủy", "Sầm Sơn", "Nghi Sơn", "Bỉm Sơn"],
-            "warnings": [
-                "Hạn chế ra ngoài từ 12h-16h để tránh sốc nhiệt.",
-                "Bổ sung đủ nước & điện giải khi lao động ngoài trời.",
-                "Đề phòng nguy cơ cháy nổ, cháy rừng và quá tải điện."
-            ],
-            "risk_level": "CẤP 1"
-        }
+        raise Exception("Chưa cấu hình GEMINI_API_KEY!")
 
-    prompt = f"""
-    Bạn là chuyên gia Khí tượng Thủy văn. Hãy phân tích văn bản bản tin KTTV dưới đây và trích xuất thông tin dưới dạng JSON chuẩn.
-    Output DUY NHẤT một chuỗi JSON theo cấu trúc:
-    {{
+    prompt = """
+    Bạn là chuyên gia Khí tượng Thủy văn. Hãy phân tích toàn bộ nội dung file PDF bản tin được đính kèm và trích xuất dữ liệu trả về duy nhất một chuỗi JSON chuẩn.
+
+    Yêu cầu cấu trúc JSON:
+    {
       "type": "NANG_NONG" | "MUA_LON" | "BAO" | "LU_QUET" | "DONG_LOC",
-      "title": "Tiêu đề bản tin ngắn gọn",
-      "doc_number": "Số hiệu bản tin",
-      "issue_time": "Thời gian phát hành",
+      "title": "Tiêu đề bản tin ngắn gọn (Viết hoa)",
+      "doc_number": "Số hiệu bản tin đầy đủ",
+      "issue_time": "Thời gian phát hành bản tin",
       "stats": [
-         {{"label": "Tên chỉ số", "value": "Giá trị", "note": "Ghi chú ngắn (nếu có)"}}
+         {"label": "Tên chỉ số", "value": "Giá trị", "note": "Ghi chú ngắn (nếu có)"}
       ],
-      "affected_areas": ["Tên huyện/trạm 1", "Tên huyện/trạm 2"],
-      "warnings": ["Khuyên cáo 1", "Khuyên cáo 2"],
+      "affected_areas": ["Danh sách các khu vực/huyện/trạm bị ảnh hưởng"],
+      "warnings": ["Các khuyến cáo / cảnh báo quan trọng"],
       "risk_level": "Cấp độ rủi ro thiên tai"
-    }}
-
-    Nội dung bản tin:
-    {raw_text}
+    }
     """
 
-    res = gemini_client.models.generate_content(
+    # Gửi trực tiếp file PDF cho Gemini 2.5 Flash xử lý
+    response = gemini_client.models.generate_content(
         model='gemini-2.5-flash',
-        contents=prompt,
+        contents=[
+            types.Part.from_bytes(
+                data=pdf_bytes,
+                mime_type='application/pdf'
+            ),
+            prompt
+        ],
         config={'response_mime_type': 'application/json'}
     )
-    return json.loads(res.text)
 
+    return json.loads(response.text)
+    
 async def render_html_to_png(data, output_path):
     """Chuyển đổi HTML thành file PNG bằng Playwright"""
     bulletin_type = data.get("type", "NANG_NONG")
