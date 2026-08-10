@@ -120,7 +120,7 @@ THEME_MAP = {
 }
 
 # ==================== BÓC TÁCH GEMINI AI (ĐÃ SỬA CHUẨN MODEL) ====================
-ddef parse_pdf_bytes_with_ai(pdf_bytes):
+def parse_pdf_bytes_with_ai(pdf_bytes):
     """Gửi REST API trực tiếp tới Google - Không dùng SDK để tránh lỗi 404 tuyệt đối"""
     if not GEMINI_API_KEY:
         raise Exception("Chưa cấu hình GEMINI_API_KEY!")
