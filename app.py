@@ -1,16 +1,33 @@
 import os
 import re
+import json
 import requests
+import urllib3
 from datetime import datetime, timedelta
 from flask import Flask, request, jsonify
+
+# Tắt cảnh báo SSL Certificate khi gọi NCHMF
+urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
 # ==================== CẤU HÌNH ====================
 IWEATHER_STORM_URL = "https://iweather.gov.vn/product/warningstorm?token=null"
 VNDMS_WARNING_URL = "https://vndms.gov.vn/EventDisaster/WarningEvent"
 
+# NGUỒN 4: Lũ quét & Sạt lở đất (Cục Khí tượng Thủy văn)
+NCHMF_LANDSLIDE_URL = "https://luquetsatlo.nchmf.gov.vn/LayerMapBox/getThongTinXaCBTheoVungVe"
+POLYGON_THANH_HOA = {
+    "id": "bbox_thanh_hoa",
+    "type": "Feature",
+    "properties": {},
+    "geometry": {
+        "type": "Polygon",
+        "coordinates": [[[104.3, 20.8], [106.2, 20.8], [106.2, 19.2], [104.3, 19.2], [104.3, 20.8]]]
+    }
+}
+
 # API Giám sát Trạm Mạng Nước (cần điền đúng URL endpoint của API ReadDeviceUser)
 IOT_STATION_URL = os.environ.get("IOT_STATION_URL", "http://iot.vientnmt.com:8888/api/DataAPI/ReadDeviceUser")
-IOT_TOKENKEY = os.environ.get("IOT_TOKENKEY", "rRh2Tws7G5ba7HCNLjc73REyXSixwmIPK2tE8t5Nr...") # Lấy tokenkey từ DevTools Payload
+IOT_TOKENKEY = os.environ.get("IOT_TOKENKEY", "rRh2Tws7G5ba7HCNLjc73REyXSixwmIPK2tE8t5Nr...")
 
 TELEGRAM_BOT_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN", "8587075816:AAHlm9r7mwCjEQlgmx6KjoZ8AE7Vd844x6s")
 TELEGRAM_API_URL = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}"
@@ -25,6 +42,9 @@ app = Flask(__name__)
 REGISTERED_CHATS = set()
 LAST_IWEATHER_COUNT = 0
 SENT_VNDMS_IDS = set()
+
+# Bộ nhớ chống spam cho Nguồn 4 (Lũ quét - Sạt lở)
+SENT_LANDSLIDE_KEYS = set()
 
 # Bộ nhớ lưu trạng thái trạm trước đó để so sánh thay đổi: { "device_id": True/False }
 STATION_PREVIOUS_STATUS = {}
@@ -52,7 +72,7 @@ def get_station_status():
             station_list.append({
                 "id": str(dev.get("Device_id", "")),
                 "name": dev.get("Device_name", "Không rõ tên"),
-                "status": bool(dev.get("Status", False)), # True: Kết nối, False: Mất kết nối
+                "status": bool(dev.get("Status", False)),
                 "area": dev.get("area", "Khác")
             })
             
@@ -163,6 +183,71 @@ def format_vndms_message(data, is_auto=False):
     msg += "🌐 *Nguồn:* Cục QLĐĐ & PCTT (vndms.gov.vn)"
     return msg
 
+# ==================== LOGIC NGUỒN 4: LŨ QUÉT & SẠT LỞ (NCHMF) ====================
+def get_nchmf_landslide_warning():
+    now_vn = datetime.utcnow() + timedelta(hours=7)
+    headers = {
+        'Content-Type': 'application/x-www-form-urlencoded; charset=UTF-8',
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)',
+        'X-Requested-With': 'XMLHttpRequest'
+    }
+    payload = {
+        "datadulieu": json.dumps(POLYGON_THANH_HOA),
+        "dataidxa": ""
+    }
+    try:
+        # verify=False để vượt lỗi chứng chỉ SSL
+        res = requests.post(NCHMF_LANDSLIDE_URL, data=payload, headers=headers, verify=False, timeout=12)
+        if res.status_code != 200:
+            return {"status": "error", "message": f"HTTP {res.status_code}"}
+            
+        data = res.json()
+        alerts = []
+        if isinstance(data, list):
+            for item in data:
+                if "Thanh Hóa" in str(item.get("ten_tinh", "")):
+                    xa_2cap = item.get("xaname_2cap") or item.get("ten_xa") or "Chưa rõ"
+                    xa_hc = item.get("ten_xa", "")
+                    lu_quet = item.get("lu_quet") or "Mức trung bình"
+                    sat_lo = item.get("sat_lo") or "Mức trung bình"
+                    
+                    alerts.append({
+                        "key": f"{item.get('xaid_2cap', xa_2cap)}_{lu_quet}_{sat_lo}",
+                        "xa_2cap": xa_2cap,
+                        "xa_hc": xa_hc,
+                        "lu_quet": lu_quet,
+                        "sat_lo": sat_lo
+                    })
+
+        return {
+            "status": "success",
+            "has_warning": len(alerts) > 0,
+            "count": len(alerts),
+            "alerts": alerts,
+            "updated_at": now_vn.strftime("%H:%M:%S %d/%m/%Y")
+        }
+    except Exception as e:
+        return {"status": "error", "message": str(e)}
+
+def format_nchmf_message(data, is_auto=False):
+    if not data.get("has_warning"):
+        return f"⛰️ **[CẢNH BÁO LŨ QUÉT & SẠT LỞ ĐẤT]**\n🕒 *Cập nhật:* {data['updated_at']}\n\n✅ **AN TOÀN:** Hiện không có xã nào ở Thanh Hóa phát sinh cảnh báo nguy cơ lũ quét hay sạt lở."
+
+    header = "⚠️ **[CẢNH BÁO TỰ ĐỘNG: LŨ QUÉT & SẠT LỞ THANH HÓA]**" if is_auto else "⛰️ **[CẢNH BÁO LŨ QUÉT & SẠT LỞ - THANH HÓA]**"
+    msg = f"{header}\n🕒 *Thời gian:* `{data['updated_at']}`\n📍 *Tổng số vùng cảnh báo:* **{data['count']} xã/khu vực**\n───────────────────\n"
+    
+    for idx, item in enumerate(data['alerts'], 1):
+        vung = item['xa_2cap']
+        if item['xa_hc'] and item['xa_hc'] != item['xa_2cap']:
+            vung += f" ({item['xa_hc']})"
+        
+        msg += f"📍 **{idx}. Địa bàn:** {vung}\n"
+        msg += f" 🌀 Lũ quét: **{item['lu_quet']}**\n"
+        msg += f" ⛰️ Sạt lở đất: **{item['sat_lo']}**\n\n"
+        
+    msg += "🌐 *Nguồn:* Cục Khí tượng Thủy văn (luquetsatlo.nchmf.gov.vn)"
+    return msg
+
 # ==================== HÀM GỬI THÔNG BÁO TELEGRAM ====================
 def send_telegram_message(chat_id, text):
     url = f"{TELEGRAM_API_URL}/sendMessage"
@@ -178,7 +263,7 @@ def broadcast_alert(text):
 # ==================== ROUTE CHẠY TỰ ĐỘNG KHÔNG DỪNG (CRON/PING) ====================
 @app.route('/')
 def home():
-    global LAST_IWEATHER_COUNT, SENT_VNDMS_IDS, STATION_PREVIOUS_STATUS
+    global LAST_IWEATHER_COUNT, SENT_VNDMS_IDS, STATION_PREVIOUS_STATUS, SENT_LANDSLIDE_KEYS
     
     # 1. Quét Cảnh báo Mất kết nối Trạm IoT
     station_data = get_station_status()
@@ -188,17 +273,14 @@ def home():
             st_name = station["name"]
             is_online = station["status"]
             
-            # Nếu đã có lịch sử theo dõi
             if st_id in STATION_PREVIOUS_STATUS:
                 prev_online = STATION_PREVIOUS_STATUS[st_id]
-                # Chuyển từ Online -> Offline: Bắn cảnh báo ngay lập tức
                 if prev_online and not is_online:
                     alert_msg = (f"🚨 **[CẢNH BÁO MẤT KẾT NỐI TRẠM]**\n"
                                  f"⚠️ Trạm: **{st_name}**\n"
                                  f"❌ Trạng thái: **ĐÃ MẤT KẾT NỐI**\n"
                                  f"🕒 Thời gian phát hiện: `{station_data['updated_at']}`")
                     broadcast_alert(alert_msg)
-                # Chuyển từ Offline -> Online: Bắn thông báo phục hồi
                 elif not prev_online and is_online:
                     recovery_msg = (f"✅ **[THÔNG BÁO TRẠM KẾT NỐI LẠI]**\n"
                                     f"📡 Trạm: **{st_name}**\n"
@@ -206,7 +288,6 @@ def home():
                                     f"🕒 Thời gian: `{station_data['updated_at']}`")
                     broadcast_alert(recovery_msg)
             
-            # Cập nhật lại bộ nhớ
             STATION_PREVIOUS_STATUS[st_id] = is_online
 
     # 2. Quét Dông sét iWeather
@@ -231,6 +312,18 @@ def home():
             v_copy['count'] = len(new_alerts)
             broadcast_alert(format_vndms_message(v_copy, is_auto=True))
 
+    # 4. Quét Lũ quét & Sạt lở đất (NCHMF)
+    landslide_data = get_nchmf_landslide_warning()
+    if landslide_data.get("status") == "success" and landslide_data.get("has_warning"):
+        new_landslide_alerts = [a for a in landslide_data['alerts'] if a['key'] not in SENT_LANDSLIDE_KEYS]
+        if new_landslide_alerts:
+            for a in new_landslide_alerts:
+                SENT_LANDSLIDE_KEYS.add(a['key'])
+            l_copy = dict(landslide_data)
+            l_copy['alerts'] = new_landslide_alerts
+            l_copy['count'] = len(new_landslide_alerts)
+            broadcast_alert(format_nchmf_message(l_copy, is_auto=True))
+
     return jsonify({
         "status": "running", 
         "registered_chats": list(REGISTERED_CHATS),
@@ -249,25 +342,31 @@ def telegram_webhook():
         # Tự động ghi nhớ Chat ID người dùng để gửi cảnh báo tự động
         REGISTERED_CHATS.add(chat_id)
 
-        # 1. LỆNH CHỈ TRA CỨU TRẠM
+        # 1. LỆNH TRA CỨU TRẠM
         if text.startswith("/tram") or text.startswith("/thietbi"):
             send_telegram_message(chat_id, "🔍 *Đang kiểm tra kết nối các trạm đo...*")
             st_data = get_station_status()
             send_telegram_message(chat_id, format_station_message(st_data))
 
-        # 2. LỆNH CHỈ TRA CỨU DÔNG SÉT
+        # 2. LỆNH TRA CỨU DÔNG SÉT
         elif text.startswith("/dong"):
             send_telegram_message(chat_id, "⚡ *Đang quét Radar Dông Sét iWeather...*")
             iweather_data = get_iweather_storm_warning("Thanh Hóa")
             send_telegram_message(chat_id, format_iweather_message(iweather_data, is_auto=False))
 
-        # 3. LỆNH CHỈ TRA CỨU CẢNH BÁO THIÊN TAI (VNDMS)
+        # 3. LỆNH TRA CỨU CẢNH BÁO THIÊN TAI (VNDMS)
         elif text.startswith("/thientai") or text.startswith("/canhbao"):
             send_telegram_message(chat_id, "🏛️ *Đang lấy bản tin thiên tai từ VNDMS...*")
             vndms_data = get_vndms_warning()
             send_telegram_message(chat_id, format_vndms_message(vndms_data, is_auto=False))
 
-        # 4. LỆNH TỔNG HỢP (/start HOẶC /tong)
+        # 4. LỆNH TRA CỨU LŨ QUÉT & SẠT LỞ (NCHMF)
+        elif text.startswith("/luquet") or text.startswith("/satlo"):
+            send_telegram_message(chat_id, "⛰️ *Đang lấy dữ liệu lũ quét & sạt lở đất...*")
+            landslide_data = get_nchmf_landslide_warning()
+            send_telegram_message(chat_id, format_nchmf_message(landslide_data, is_auto=False))
+
+        # 5. LỆNH TỔNG HỢP (/start HOẶC /tong)
         elif text.startswith("/start") or text.startswith("/tong") or text.startswith("/thoitiet"):
             welcome_msg = (
                 "👋 **HỆ THỐNG GIÁM SÁT & CẢNH BÁO TỰ ĐỘNG**\n\n"
@@ -275,8 +374,9 @@ def telegram_webhook():
                 "🔹 `/tram` - Kiểm tra kết nối các Trạm đo\n"
                 "🔹 `/dong` - Quét mây dông, sét (iWeather)\n"
                 "🔹 `/thientai` - Tin cảnh báo thiên tai (VNDMS)\n"
+                "🔹 `/luquet` - Nguồn cảnh báo Lũ quét & Sạt lở (NCHMF)\n"
                 "🔹 `/tong` - Báo cáo tổng hợp tất cả\n\n"
-                "⏳ *Đang tiến hành tổng hợp dữ liệu...*"
+                "⏳ *Đang tiến hành tổng hợp dữ liệu 4 nguồn...*"
             )
             send_telegram_message(chat_id, welcome_msg)
 
@@ -292,4 +392,11 @@ def telegram_webhook():
             vndms_data = get_vndms_warning()
             send_telegram_message(chat_id, format_vndms_message(vndms_data, is_auto=False))
 
+            # --- Trả kết quả 4: Lũ quét & Sạt lở ---
+            landslide_data = get_nchmf_landslide_warning()
+            send_telegram_message(chat_id, format_nchmf_message(landslide_data, is_auto=False))
+
     return "OK", 200
+
+if __name__ == '__main__':
+    app.run(host='0.0.0.0', port=5000)
