@@ -257,9 +257,14 @@ def format_vndms_message(data, is_auto=False):
     return msg
 
 # ==================== LOGIC NGUỒN 4: LŨ QUÉT & SẠT LỞ (NCHMF) ====================
+NCHMF_CANHBAO_URL = "https://luquetsatlo.nchmf.gov.vn/LayerMapBox/getDSCanhbaoSLLQ"
+
 def get_nchmf_landslide_warning():
     now_vn = datetime.utcnow() + timedelta(hours=7)
     now_str = now_vn.strftime("%H:%M:%S %d/%m/%Y")
+    
+    # Định dạng tham số date chuẩn theo Payload API: YYYY-MM-DD HH:00:00
+    date_param = now_vn.strftime("%Y-%m-%d %H:00:00")
     
     headers = {
         'Content-Type': 'application/x-www-form-urlencoded; charset=UTF-8',
@@ -267,23 +272,65 @@ def get_nchmf_landslide_warning():
         'X-Requested-With': 'XMLHttpRequest'
     }
     
-    # datadulieu được json.dumps ra dạng mảng [{...}]
+    # Form Data chuẩn từ DevTools
     payload = {
-        "datadulieu": json.dumps(POLYGON_THANH_HOA),
-        "dataidxa": ""
+        "sogiodubao": "6",
+        "date": date_param
     }
     
     try:
-        res = requests.post(NCHMF_LANDSLIDE_URL, data=payload, headers=headers, verify=False, timeout=12)
+        # Gọi API getDSCanhbaoSLLQ với verify=False
+        res = requests.post(NCHMF_CANHBAO_URL, data=payload, headers=headers, verify=False, timeout=12)
+        
         if res.status_code != 200:
             return {
-                "status": "error", 
-                "message": f"Server Cục KTTV gián đoạn (HTTP {res.status_code})",
+                "status": "error",
+                "message": f"HTTP {res.status_code}",
                 "has_warning": False,
                 "count": 0,
                 "alerts": [],
                 "updated_at": now_str
             }
+            
+        data = res.json()
+        alerts = []
+        
+        if isinstance(data, list):
+            for item in data:
+                ten_tinh = str(item.get("ten_tinh", "") or item.get("Tinh", ""))
+                
+                # Lọc riêng tỉnh Thanh Hóa
+                if "Thanh Hóa" in ten_tinh:
+                    xa_2cap = item.get("xaname_2cap") or item.get("ten_xa") or "Chưa rõ"
+                    xa_hc = item.get("ten_xa", "")
+                    lu_quet = item.get("lu_quet") or item.get("CapCB_LQ") or "Mức trung bình"
+                    sat_lo = item.get("sat_lo") or item.get("CapCB_SL") or "Mức trung bình"
+                    
+                    alerts.append({
+                        "key": f"{item.get('xaid_2cap', xa_2cap)}_{lu_quet}_{sat_lo}",
+                        "xa_2cap": xa_2cap,
+                        "xa_hc": xa_hc,
+                        "lu_quet": lu_quet,
+                        "sat_lo": sat_lo
+                    })
+
+        return {
+            "status": "success",
+            "has_warning": len(alerts) > 0,
+            "count": len(alerts),
+            "alerts": alerts,
+            "updated_at": now_str
+        }
+        
+    except Exception as e:
+        return {
+            "status": "error",
+            "message": str(e),
+            "has_warning": False,
+            "count": 0,
+            "alerts": [],
+            "updated_at": now_str
+        }
             
         data = res.json()
         alerts = []
