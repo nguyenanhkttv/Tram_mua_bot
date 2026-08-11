@@ -180,7 +180,7 @@ def get_nchmf_landslide_warning():
     now_vn = datetime.utcnow() + timedelta(hours=7)
     headers = {
         'Content-Type': 'application/x-www-form-urlencoded; charset=UTF-8',
-        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)',
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
         'X-Requested-With': 'XMLHttpRequest'
     }
     payload = {
@@ -188,14 +188,18 @@ def get_nchmf_landslide_warning():
         "dataidxa": ""
     }
     try:
-        res = requests.post(NCHMF_LANDSLIDE_URL, data=payload, headers=headers, verify=False, timeout=12)
+        # Tăng timeout lên 15s phòng trường hợp server NCHMF phản hồi chậm
+        res = requests.post(NCHMF_LANDSLIDE_URL, data=payload, headers=headers, verify=False, timeout=15)
+        
         if res.status_code != 200:
             return {"status": "error", "message": f"HTTP {res.status_code}"}
             
         data = res.json()
         alerts = []
-        if isinstance(data, list):
+        
+        if isinstance(data, list) and len(data) > 0:
             for item in data:
+                # Lọc điều kiện Thanh Hóa
                 if "Thanh Hóa" in str(item.get("ten_tinh", "")):
                     xa_2cap = item.get("xaname_2cap") or item.get("ten_xa") or "Chưa rõ"
                     xa_hc = item.get("ten_xa", "")
@@ -210,6 +214,7 @@ def get_nchmf_landslide_warning():
                         "sat_lo": sat_lo
                     })
 
+        # Bắt buộc trả về status thành công kể cả khi alerts rỗng
         return {
             "status": "success",
             "has_warning": len(alerts) > 0,
@@ -218,12 +223,19 @@ def get_nchmf_landslide_warning():
             "updated_at": now_vn.strftime("%H:%M:%S %d/%m/%Y")
         }
     except Exception as e:
-        return {"status": "error", "message": str(e)}
+        print(f"Lỗi API NCHMF: {e}")
+        return {"status": "error", "message": str(e), "updated_at": now_vn.strftime("%H:%M:%S %d/%m/%Y")}
 
 def format_nchmf_message(data, is_auto=False):
-    if not data.get("has_warning"):
-        return f"⛰️ <b>[CẢNH BÁO LŨ QUÉT & SẠT LỞ ĐẤT]</b>\n🕒 <i>Cập nhật:</i> {data['updated_at']}\n\n✅ <b>AN TOÀN:</b> Hiện không có xã nào ở Thanh Hóa phát sinh cảnh báo nguy cơ lũ quét hay sạt lở."
+    # Nếu bị lỗi kết nối API
+    if data.get("status") == "error":
+        return f"⛰️ <b>[CẢNH BÁO LŨ QUÉT & SẠT LỞ]</b>\n🕒 <i>Cập nhật:</i> {data.get('updated_at')}\n\n❌ <b>LỖI KẾT NỐI:</b> Không thể lấy dữ liệu từ Cục KTTV (<code>{data.get('message')}</code>)."
 
+    # Nếu an toàn (không có xã nào ở Thanh Hóa phát sinh cảnh báo)
+    if not data.get("has_warning"):
+        return f"⛰️ <b>[CẢNH BÁO LŨ QUÉT & SẠT LỞ - NCHMF]</b>\n🕒 <i>Cập nhật:</i> {data['updated_at']}\n\n✅ <b>AN TOÀN:</b> Hiện không có xã/khu vực nào tại Thanh Hóa nằm trong danh sách cảnh báo nguy cơ lũ quét hay sạt lở đất."
+
+    # Nếu có cảnh báo
     header = "⚠️ <b>[CẢNH BÁO TỰ ĐỘNG: LŨ QUÉT & SẠT LỞ THANH HÓA]</b>" if is_auto else "⛰️ <b>[CẢNH BÁO LŨ QUÉT & SẠT LỞ - THANH HÓA]</b>"
     msg = f"{header}\n🕒 <i>Thời gian:</i> <code>{data['updated_at']}</code>\n📍 <i>Tổng số vùng cảnh báo:</i> <b>{data['count']} xã/khu vực</b>\n───────────────────\n"
     
@@ -280,6 +292,8 @@ def process_user_command(chat_id, text_raw):
 
     # 4. LỆNH TRA CỨU LŨ QUÉT & SẠT LỞ (NCHMF)
     elif cmd in ["/luquet", "/satlo"]:
+        # Gửi tin nhắn phản hồi nhanh để xác nhận Bot đã nhận lệnh
+        send_telegram_message(chat_id, "⛰️ <i>Đang kiểm tra dữ liệu lũ quét & sạt lở từ Cục KTTV...</i>")
         landslide_data = get_nchmf_landslide_warning()
         send_telegram_message(chat_id, format_nchmf_message(landslide_data, is_auto=False))
 
