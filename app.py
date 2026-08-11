@@ -339,64 +339,72 @@ def telegram_webhook():
         chat_id = message["chat"]["id"]
         text = message.get("text", "").strip().lower()
 
-        # Tự động ghi nhớ Chat ID người dùng để gửi cảnh báo tự động
+        # Tự động ghi nhớ Chat ID người dùng để gửi cảnh báo tự động khi có biến
         REGISTERED_CHATS.add(chat_id)
 
-        # 1. LỆNH TRA CỨU TRẠM
+        # 1. CHỈ TRA CỨU TRẠM MẠNG NƯỚC
         if text.startswith("/tram") or text.startswith("/thietbi"):
-            send_telegram_message(chat_id, "🔍 *Đang kiểm tra kết nối các trạm đo...*")
             st_data = get_station_status()
             send_telegram_message(chat_id, format_station_message(st_data))
 
-        # 2. LỆNH TRA CỨU DÔNG SÉT
+        # 2. CHỈ TRA CỨU RADAR DÔNG SÉT (IWEATHER)
         elif text.startswith("/dong"):
-            send_telegram_message(chat_id, "⚡ *Đang quét Radar Dông Sét iWeather...*")
             iweather_data = get_iweather_storm_warning("Thanh Hóa")
             send_telegram_message(chat_id, format_iweather_message(iweather_data, is_auto=False))
 
-        # 3. LỆNH TRA CỨU CẢNH BÁO THIÊN TAI (VNDMS)
+        # 3. CHỈ TRA CỨU CẢNH BÁO THIÊN TAI (VNDMS)
         elif text.startswith("/thientai") or text.startswith("/canhbao"):
-            send_telegram_message(chat_id, "🏛️ *Đang lấy bản tin thiên tai từ VNDMS...*")
             vndms_data = get_vndms_warning()
             send_telegram_message(chat_id, format_vndms_message(vndms_data, is_auto=False))
 
-        # 4. LỆNH TRA CỨU LŨ QUÉT & SẠT LỞ (NCHMF)
+        # 4. CHỈ TRA CỨU LŨ QUÉT & SẠT LỞ (NCHMF)
         elif text.startswith("/luquet") or text.startswith("/satlo"):
-            send_telegram_message(chat_id, "⛰️ *Đang lấy dữ liệu lũ quét & sạt lở đất...*")
             landslide_data = get_nchmf_landslide_warning()
             send_telegram_message(chat_id, format_nchmf_message(landslide_data, is_auto=False))
 
-        # 5. LỆNH TỔNG HỢP (/start HOẶC /tong)
+        # 5. LỆNH TỔNG HỢP GỘP TRONG 1 TIN NHẮN DUY NHẤT (/start HOẶC /tong)
         elif text.startswith("/start") or text.startswith("/tong") or text.startswith("/thoitiet"):
-            welcome_msg = (
-                "👋 **HỆ THỐNG GIÁM SÁT & CẢNH BÁO TỰ ĐỘNG**\n\n"
-                "Danh sách các câu lệnh tra cứu:\n"
-                "🔹 `/tram` - Kiểm tra kết nối các Trạm đo\n"
-                "🔹 `/dong` - Quét mây dông, sét (iWeather)\n"
-                "🔹 `/thientai` - Tin cảnh báo thiên tai (VNDMS)\n"
-                "🔹 `/luquet` - Nguồn cảnh báo Lũ quét & Sạt lở (NCHMF)\n"
-                "🔹 `/tong` - Báo cáo tổng hợp tất cả\n\n"
-                "⏳ *Đang tiến hành tổng hợp dữ liệu 4 nguồn...*"
-            )
-            send_telegram_message(chat_id, welcome_msg)
-
-            # --- Trả kết quả 1: Trạm ---
+            # Lấy dữ liệu cả 4 nguồn
             st_data = get_station_status()
-            send_telegram_message(chat_id, format_station_message(st_data))
-
-            # --- Trả kết quả 2: Dông Sét ---
             iweather_data = get_iweather_storm_warning("Thanh Hóa")
-            send_telegram_message(chat_id, format_iweather_message(iweather_data, is_auto=False))
-
-            # --- Trả kết quả 3: Thiên tai ---
             vndms_data = get_vndms_warning()
-            send_telegram_message(chat_id, format_vndms_message(vndms_data, is_auto=False))
-
-            # --- Trả kết quả 4: Lũ quét & Sạt lở ---
             landslide_data = get_nchmf_landslide_warning()
-            send_telegram_message(chat_id, format_nchmf_message(landslide_data, is_auto=False))
+
+            # --- TỔNG HỢP VÀO 1 TIN NHẮN ---
+            msg = "📊 **[BÁO CÁO TỔNG HỢP THỜI TIẾT & HỆ THỐNG]**\n"
+            msg += f"🕒 *Thời gian:* `{datetime.utcnow() + timedelta(hours=7):%H:%M %d/%m/%Y}`\n"
+            msg += "═══════════════════\n\n"
+
+            # 1. Tóm tắt Trạm
+            if st_data.get("status") == "success":
+                stations = st_data.get("stations", [])
+                online = sum(1 for s in stations if s["status"])
+                msg += f"📡 **TRẠM TỰ ĐỘNG:** 🟢 {online}/{len(stations)} trạm kết nối\n"
+            else:
+                msg += f"📡 **TRẠM TỰ ĐỘNG:** ❌ Lỗi kết nối API\n"
+
+            # 2. Tóm tắt Dông sét
+            if iweather_data.get("has_warning"):
+                msg += f"🌩️ **DÔNG SÉT (iWeather):** ⚠️ Có {iweather_data['count']} vùng phát triển\n"
+            else:
+                msg += "🌩️ **DÔNG SÉT (iWeather):** 🟢 An toàn\n"
+
+            # 3. Tóm tắt Thiên tai
+            if vndms_data.get("has_warning"):
+                msg += f"🏛️ **THIÊN TAI (VNDMS):** 🚨 Có {vndms_data['count']} bản tin khẩn\n"
+            else:
+                msg += "🏛️ **THIÊN TAI (VNDMS):** 🟢 Không có cảnh báo\n"
+
+            # 4. Tóm tắt Lũ quét & Sạt lở
+            if landslide_data.get("has_warning"):
+                msg += f"⛰️ **LŨ QUÉT & SẠT LỞ:** ⚠️ Có {landslide_data['count']} xã/vùng nguy cơ\n"
+            else:
+                msg += "⛰️ **LŨ QUÉT & SẠT LỞ:** 🟢 An toàn\n"
+
+            msg += "\n💡 *Gõ từng lệnh riêng để xem chi tiết:*\n"
+            msg += "`/tram` | `/dong` | `/thientai` | `/luquet`"
+
+            # Gửi đúng 1 tin nhắn tổng hợp duy nhất
+            send_telegram_message(chat_id, msg)
 
     return "OK", 200
-
-if __name__ == '__main__':
-    app.run(host='0.0.0.0', port=5000)
