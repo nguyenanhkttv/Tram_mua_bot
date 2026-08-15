@@ -457,10 +457,21 @@ def process_user_command(chat_id, text_raw):
         send_telegram_message(chat_id, format_station_message(st_data))
 
     # 2. LỆNH TRA CỨU MƯA TO (VRAIN & KTTV)
-    elif cmd in ["/mua", "/muato"]:
-        send_telegram_message(chat_id, "🌧️ <i>Đang quét dữ liệu mưa từ Vrain & KTTV...</i>")
+    if cmd in ["/muato", "/mua"]:
+        send_telegram_message(chat_id, "🌧️ <i>Đang quét dữ liệu mưa từ Vrain & KTTV Thanh Hóa...</i>")
+        
+        # Gọi hàm lấy dữ liệu mưa thực tế
         rain_data = get_vrain_heavy_rain_warning()
-        send_telegram_message(chat_id, format_rain_message(rain_data, is_auto=False))
+        
+        if rain_data.get("has_warning"):
+            # Nếu có trạm mưa >= 51mm -> Gửi danh sách cảnh báo
+            send_telegram_message(chat_id, format_rain_message(rain_data))
+        else:
+            # Nếu không có trạm nào mưa to -> Thông báo an toàn
+            msg = f"🌧️ <b>[GIÁM SÁT MƯA LỚN THANH HÓA]</b>\n"
+            msg += f"🕒 <i>Thời gian quét:</i> <code>{rain_data['updated_at']}</code>\n\n"
+            msg += f"✅ <b>AN TOÀN:</b> Hiện chưa ghi nhận trạm nào ở Thanh Hóa có lượng mưa ≥ 51mm."
+            send_telegram_message(chat_id, msg)
 
     # 3. LỆNH TRA CỨU DÔNG SÉT
     elif cmd == "/dong":
