@@ -15,8 +15,8 @@ IWEATHER_STORM_URL = "https://iweather.gov.vn/product/warningstorm?token=null"
 VNDMS_WARNING_URL = "https://vndms.gov.vn/EventDisaster/WarningEvent"
 
 # NGUỒN VRAIN: Lượng mưa chuyên dùng & KTTV
-VRAIN_THANH_HOA_URL = "https://vrain.vn/api/v2/home/33/overview"  # URL API lấy lượng mưa Vrain Thanh Hóa
-KTTV_VRAIN_URL = "https://kttv.vrain.vn/api/v2/home/14/overview"    # URL API KTTV Bắc Trung Bộ
+VRAIN_DETAILS_URL = "https://vrain.vn/api/v2/home/33/details"
+KTTV_DETAILS_URL = "https://kttv.vrain.vn/api/v2/home/14/details"
 
 # NGUỒN 4: Lũ quét & Sạt lở đất (Cục Khí tượng Thủy văn)
 NCHMF_LANDSLIDE_URL = "https://luquetsatlo.nchmf.gov.vn/LayerMapBox/getThongTinXaCBTheoVungVe"
@@ -621,8 +621,8 @@ def home():
             STATION_PREVIOUS_STATUS[st_id] = is_online
 
     # 2. Giám sát Mưa to (Vrain & KTTV Thanh Hóa)
-    rain_data = get_vrain_heavy_rain_warning()
-    if rain_data.get("status") == "success" and rain_data.get("has_warning"):
+    rain_data = fetch_heavy_rain_stations()
+    if rain_data.get("has_warning"):
         new_rain_alerts = [a for a in rain_data['alerts'] if a['key'] not in SENT_RAIN_ALERTS]
         if new_rain_alerts:
             for a in new_rain_alerts:
@@ -630,7 +630,7 @@ def home():
             r_copy = dict(rain_data)
             r_copy['alerts'] = new_rain_alerts
             r_copy['count'] = len(new_rain_alerts)
-            broadcast_alert(format_rain_message(r_copy, is_auto=True))
+            broadcast_alert(format_rain_alert_msg(r_copy))
 
     # 3. iWeather Dông sét
     iweather_data = get_iweather_storm_warning("Thanh Hóa")
