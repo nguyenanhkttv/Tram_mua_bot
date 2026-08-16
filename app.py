@@ -199,14 +199,12 @@ def format_rain_alert_msg(data):
 
 # ==================== LUỒNG QUÉT TỰ ĐỘNG MỖI 15 PHÚT ====================
 def start_15m_rain_scanner():
-    """Tự động quét ngầm mỗi 15 phút, phát hiện trạm vượt 51mm là bắn Telegram ngay"""
     global SENT_RAIN_ALERTS
     while True:
         try:
             rain_data = fetch_heavy_rain_stations()
             if rain_data.get("has_warning"):
                 new_alerts = [a for a in rain_data['alerts'] if a['key'] not in SENT_RAIN_ALERTS]
-                
                 if new_alerts:
                     for a in new_alerts:
                         SENT_RAIN_ALERTS.add(a['key'])
@@ -217,15 +215,15 @@ def start_15m_rain_scanner():
                     
                     msg_text = format_rain_alert_msg(r_copy)
                     for chat_id in REGISTERED_CHATS:
-                        requests.post(f"{TELEGRAM_API_URL}/sendMessage", json={
-                            "chat_id": chat_id,
-                            "text": msg_text,
-                            "parse_mode": "HTML"
-                        }, timeout=10)
+                        requests.post(
+                            f"{TELEGRAM_API_URL}/sendMessage",
+                            json={"chat_id": chat_id, "text": msg_text, "parse_mode": "HTML"},
+                            timeout=10
+                        )
         except Exception as e:
             print(f"❌ Lỗi luồng 15m scanner: {e}")
             
-        time.sleep(900) # Quét ngầm mỗi 15 phút (900 giây)
+        time.sleep(900)
 
 threading.Thread(target=start_15m_rain_scanner, daemon=True).start()
 
@@ -522,21 +520,16 @@ def process_user_command(chat_id, text_raw):
 
     # 2. LỆNH TRA CỨU MƯA TO (VRAIN & KTTV)
     if cmd in ["/muato", "/mua"]:
-        send_telegram_message(chat_id, "🌧️ <i>Đang quét dữ liệu mưa từ Vrain & KTTV Thanh Hóa...</i>")
+        rain_data = fetch_heavy_rain_stations()
+        if rain_data.get("has_warning"):
+            msg = format_rain_alert_msg(rain_data)
+        else:
+            msg = f"🌧️ <b>[GIÁM SÁT MƯA THANH HÓA]</b>\n📅 <i>Khung tính:</i> <code>{rain_data['time_range']}</code>\n\n✅ <b>AN TOÀN:</b> Chưa có trạm nào vượt ngưỡng 51mm trong khung 19:00 ➔ 18:59."
         
-        # Gọi hàm lấy dữ liệu mưa thực tế
-get_vrain_heavy_rain_warning = fetch_heavy_rain_stations
-        
-    if rain_data.get("has_warning"):
-         # Nếu có trạm mưa >= 51mm -> Gửi danh sách cảnh báo
-        send_telegram_message(chat_id, format_rain_message(rain_data))
-    else:
-        # Nếu không có trạm nào mưa to -> Thông báo an toàn
-        msg = f"🌧️ <b>[GIÁM SÁT MƯA LỚN THANH HÓA]</b>\n"
-        msg += f"🕒 <i>Thời gian quét:</i> <code>{rain_data['updated_at']}</code>\n\n"
-        msg += f"✅ <b>AN TOÀN:</b> Hiện chưa ghi nhận trạm nào ở Thanh Hóa có lượng mưa ≥ 51mm."
-        send_telegram_message(chat_id, msg)
-
+        requests.post(
+            f"{TELEGRAM_API_URL}/sendMessage",
+            json={"chat_id": chat_id, "text": msg, "parse_mode": "HTML"}
+        )
     # 3. LỆNH TRA CỨU DÔNG SÉT
     elif cmd == "/dong":
         iweather_data = get_iweather_storm_warning("Thanh Hóa")
