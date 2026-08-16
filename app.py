@@ -525,7 +525,7 @@ def process_user_command(chat_id, text_raw):
         send_telegram_message(chat_id, "🌧️ <i>Đang quét dữ liệu mưa từ Vrain & KTTV Thanh Hóa...</i>")
         
         # Gọi hàm lấy dữ liệu mưa thực tế
-    get_vrain_heavy_rain_warning = fetch_heavy_rain_stations
+get_vrain_heavy_rain_warning = fetch_heavy_rain_stations
         
         if rain_data.get("has_warning"):
             # Nếu có trạm mưa >= 51mm -> Gửi danh sách cảnh báo
