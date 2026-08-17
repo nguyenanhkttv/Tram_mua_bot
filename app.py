@@ -546,7 +546,20 @@ def telegram_webhook():
             threading.Thread(target=process_user_command, args=(chat_id, text_raw), daemon=True).start()
 
     return "OK", 200
+# ==================== LUỒNG GIỮ RENDER LUÔN THỨC (SELF-PING) ====================
+def keep_alive():
+    # Lấy URL của app trên Render (hoặc tự điền URL của bạn)
+    app_url = os.environ.get("RENDER_EXTERNAL_URL", "https://tram-mua-bot.onrender.com")
+    while True:
+        try:
+            time.sleep(600) # Gửi request mỗi 10 phút (600 giây)
+            res = requests.get(app_url, timeout=10)
+            print(f"⏰ Self-ping status: {res.status_code}")
+        except Exception as e:
+            print(f"❌ Lỗi Self-ping: {e}")
 
+# Kích hoạt luồng giữ thức ngay khi app khởi động
+threading.Thread(target=keep_alive, daemon=True).start()
 if __name__ == '__main__':
     port = int(os.environ.get("PORT", 5000))
     app.run(host='0.0.0.0', port=port, threaded=True)
