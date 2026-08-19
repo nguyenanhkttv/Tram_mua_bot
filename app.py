@@ -29,7 +29,7 @@ HEADERS_DEFAULT = {
 
 app = Flask(__name__)
 
-# ==================== LƯU MẢNG CHAT ID RA FILE ĐỂ KHÔNG MẤT KHI RESTART ====================
+# ==================== LƯU MẢNG CHAT ID RA FILE ====================
 CHAT_FILE = "chats.json"
 
 def load_chats():
@@ -184,10 +184,8 @@ def format_rain_alert_msg(data):
 
     return msg
 
-# Gán alias tên hàm cũ sang tên hàm mới để tránh lỗi NameError
 get_vrain_heavy_rain_warning = fetch_heavy_rain_stations
 
-# ==================== LUỒNG QUÉT MƯA NGLẦM MỖI 5 PHÚT ====================
 def start_5m_rain_scanner():
     global SENT_RAIN_ALERTS
     while True:
@@ -213,11 +211,11 @@ def start_5m_rain_scanner():
         except Exception as e:
             print(f"❌ Lỗi luồng 5m scanner: {e}")
             
-        time.sleep(300) # Đổi thành 300 giây = 5 phút
+        time.sleep(300)
 
 threading.Thread(target=start_5m_rain_scanner, daemon=True).start()
 
-# ==================== LOGIC CÁC NGUỒN KHÁC ====================
+# ==================== CÁC NGUỒN KHÁC (TRẠM, IWEATHER, VNDMS, NCHMF) ====================
 def get_station_status():
     now_vn = datetime.utcnow() + timedelta(hours=7)
     headers = {**HEADERS_DEFAULT, 'Content-Type': 'application/json'}
@@ -301,31 +299,35 @@ def format_iweather_message(data, is_auto=False):
 
 def get_vndms_warning():
     now_vn = datetime.utcnow() + timedelta(hours=7)
+    alerts = []
     try:
         res = requests.get(VNDMS_WARNING_URL, headers=HEADERS_DEFAULT, timeout=12)
-        if res.status_code != 200: 
-            return {"status": "error", "message": f"HTTP {res.status_code}"}
-        
-        data = res.json()
-        alerts = []
-        if isinstance(data, list):
-            for item in data:
-                alerts.append({
-                    "id": item.get("Id") or item.get("Code") or str(hash(str(item))),
-                    "title": item.get("DisasterName") or item.get("Name") or "CẢNH BÁO THIÊN TAI NGUY HIỂM",
-                    "risk_level": item.get("RiskLevel", "Đang cập nhật"),
-                    "start_time": item.get("StartDate", "Chưa xác định"),
-                    "description": item.get("Description") or item.get("Note") or "Chưa có thông tin chi tiết."
-                })
-        return {
-            "status": "success", 
-            "has_warning": len(alerts) > 0, 
-            "count": len(alerts), 
-            "alerts": alerts, 
-            "updated_at": now_vn.strftime("%H:%M:%S %d/%m/%Y")
-        }
-    except Exception as e: 
-        return {"status": "error", "message": str(e)}
+        if res.status_code == 200:
+            data = res.json()
+            if isinstance(data, list):
+                for item in data:
+                    title = item.get("DisasterName") or item.get("Name") or "CẢNH BÁO THIÊN TAI NGUY HIỂM"
+                    risk_level = item.get("RiskLevel") or item.get("Risk") or "Cấp độ 3"
+                    start_time = item.get("StartDate") or item.get("Time") or "Đang diễn ra"
+                    description = item.get("Description") or item.get("Note") or item.get("Content") or f"Vùng ảnh hưởng: {item.get('Area', 'Biển Đông / Thanh Hóa')}"
+                    
+                    alerts.append({
+                        "id": str(item.get("Id") or item.get("Code") or hash(str(item))),
+                        "title": title,
+                        "risk_level": risk_level,
+                        "start_time": start_time,
+                        "description": description
+                    })
+    except Exception as e:
+        print(f"❌ Lỗi VNDMS: {e}")
+
+    return {
+        "status": "success", 
+        "has_warning": len(alerts) > 0, 
+        "count": len(alerts), 
+        "alerts": alerts, 
+        "updated_at": now_vn.strftime("%H:%M:%S %d/%m/%Y")
+    }
 
 def format_vndms_message(data, is_auto=False):
     if not data.get("has_warning"):
@@ -338,11 +340,11 @@ def format_vndms_message(data, is_auto=False):
     msg += "🌐 <i>Nguồn: Cục QLĐĐ & PCTT (vndms.gov.vn)</i>"
     return msg
 
-# ĐÃ CHỈNH SỬA HÀM SẠT LỞ GỌN GÀNG, TRÁNH LỖI DUPLICATE CODE
+# HÀM SẠT LỞ NCHMF TỐI ƯU: ĐỌC LINH HOẠT DICT/LIST VÀ LỌC CHUẨN DẤU THANH HÓA/THANH HOÁ
 def get_nchmf_landslide_warning():
     now_vn = datetime.utcnow() + timedelta(hours=7)
     now_str = now_vn.strftime("%H:%M:%S %d/%m/%Y")
-    date_param = now_vn.strftime("%Y-%m-%d %H:00:00")
+    date_param = now_vn.strftime("%Y-%m-%d 00:00:00")
     
     headers = {
         'Content-Type': 'application/x-www-form-urlencoded; charset=UTF-8',
@@ -358,16 +360,35 @@ def get_nchmf_landslide_warning():
             
         data = res.json()
         alerts = []
+        
+        items_list = []
         if isinstance(data, list):
-            for item in data:
-                ten_tinh = str(item.get("ten_tinh", "") or item.get("Tinh", ""))
-                if "Thanh Hóa" in ten_tinh:
-                    xa_2cap = item.get("xaname_2cap") or item.get("ten_xa") or "Chưa rõ"
-                    xa_hc = item.get("ten_xa", "")
-                    lu_quet = item.get("lu_quet") or item.get("CapCB_LQ") or "Mức trung bình"
-                    sat_lo = item.get("sat_lo") or item.get("CapCB_SL") or "Mức trung bình"
+            items_list = data
+        elif isinstance(data, dict):
+            for k in ["data", "result", "results", "list", "content", "ds"]:
+                if isinstance(data.get(k), list):
+                    items_list = data.get(k)
+                    break
+            if not items_list:
+                items_list = [v for v in data.values() if isinstance(v, dict)]
+
+        for item in items_list:
+            if not isinstance(item, dict):
+                continue
+            
+            ten_tinh = str(item.get("ten_tinh", "") or item.get("Tinh", "") or item.get("provinceName", ""))
+            
+            # Kiểm tra không phân biệt chữ hoa/thường và hỗ trợ cả dấu ngã/sắc ("Hóa" / "Hoá")
+            if "thanh" in ten_tinh.lower() and ("hoá" in ten_tinh.lower() or "hóa" in ten_tinh.lower()):
+                xa_2cap = item.get("xaname_2cap") or item.get("ten_xa") or item.get("communeName") or "Chưa rõ"
+                xa_hc = item.get("ten_xa", "")
+                lu_quet = item.get("lu_quet") or item.get("CapCB_LQ") or item.get("warningLevelLQ") or "Mức trung bình"
+                sat_lo = item.get("sat_lo") or item.get("CapCB_SL") or item.get("warningLevelSL") or "Mức trung bình"
+                
+                alert_key = f"{item.get('xaid_2cap', xa_2cap)}_{lu_quet}_{sat_lo}"
+                if not any(a['key'] == alert_key for a in alerts):
                     alerts.append({
-                        "key": f"{item.get('xaid_2cap', xa_2cap)}_{lu_quet}_{sat_lo}",
+                        "key": alert_key,
                         "xa_2cap": xa_2cap,
                         "xa_hc": xa_hc,
                         "lu_quet": lu_quet,
@@ -410,7 +431,7 @@ def broadcast_alert(text):
     for chat_id in REGISTERED_CHATS: 
         send_telegram_message(chat_id, text)
 
-# ==================== PHẦN XỬ LÝ LỆNH NGƯỜI DÙNG ====================
+# ==================== XỬ LÝ LỆNH NGƯỜI DÙNG ====================
 def process_user_command(chat_id, text_raw):
     cmd = text_raw.split()[0].split("@")[0].lower() if text_raw else ""
 
@@ -462,10 +483,10 @@ def process_user_command(chat_id, text_raw):
         msg += f"🏛️ <b>THIÊN TAI (VNDMS):</b> " + (f"🚨 Có {vndms_data['count']} bản tin khẩn\n" if vndms_data.get("has_warning") else "🟢 Không có cảnh báo\n")
         msg += f"⛰️ <b>LŨ QUÉT & SẠT LỞ:</b> " + (f"⚠️ Có {landslide_data['count']} xã/vùng nguy cơ\n" if landslide_data.get("has_warning") else "🟢 An toàn\n")
 
-        msg += "\n💡 <i>Gõ từng lệnh riêng để xem chi tiết:</i>\n<code>/tram</code> | <code>/mua</code> | <code>/dong</code> | <code>/thientai</code> | <code>/luquet</code>"
+        msg += "\n💡 <i>Gõ lệnh riêng để xem chi tiết:</i>\n<code>/tram</code> | <code>/mua</code> | <code>/dong</code> | <code>/thientai</code> | <code>/luquet</code>"
         send_telegram_message(chat_id, msg)
 
-# ==================== ROUTE CRON TỰ ĐỘNG QUÉT TOÀN BỘ MỖI 5 PHÚT ====================
+# ==================== ROUTE QUÉT ĐỊNH KỲ (CRON) MỖI 5 PHÚT ====================
 @app.route('/')
 def home():
     global LAST_IWEATHER_COUNT, SENT_VNDMS_IDS, STATION_PREVIOUS_STATUS, SENT_LANDSLIDE_KEYS, SENT_RAIN_ALERTS
@@ -540,26 +561,26 @@ def telegram_webhook():
         text_raw = message.get("text", "").strip()
 
         REGISTERED_CHATS.add(chat_id)
-        save_chats() # Tự động lưu ID người dùng ra file
+        save_chats()
 
         if text_raw:
             threading.Thread(target=process_user_command, args=(chat_id, text_raw), daemon=True).start()
 
     return "OK", 200
-# ==================== LUỒNG GIỮ RENDER LUÔN THỨC (SELF-PING) ====================
+
+# ==================== GIỮ RENDER LUÔN THỨC (SELF-PING) ====================
 def keep_alive():
-    # Lấy URL của app trên Render (hoặc tự điền URL của bạn)
     app_url = os.environ.get("RENDER_EXTERNAL_URL", "https://tram-mua-bot.onrender.com")
     while True:
         try:
-            time.sleep(600) # Gửi request mỗi 10 phút (600 giây)
+            time.sleep(600)
             res = requests.get(app_url, timeout=10)
             print(f"⏰ Self-ping status: {res.status_code}")
         except Exception as e:
             print(f"❌ Lỗi Self-ping: {e}")
 
-# Kích hoạt luồng giữ thức ngay khi app khởi động
 threading.Thread(target=keep_alive, daemon=True).start()
+
 if __name__ == '__main__':
     port = int(os.environ.get("PORT", 5000))
     app.run(host='0.0.0.0', port=port, threaded=True)
