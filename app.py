@@ -396,9 +396,6 @@ def get_nchmf_landslide_warning():
     now_vn = datetime.utcnow() + timedelta(hours=7)
     now_str = now_vn.strftime("%H:%M:%S %d/%m/%Y")
     
-    # Format date chính xác theo giờ hiện tại (VD: 2026-08-21 23:00:00)
-    date_param = now_vn.strftime("%Y-%m-%d %H:00:00")
-    
     headers = {
         'Accept': '*/*',
         'Content-Type': 'application/x-www-form-urlencoded; charset=UTF-8',
@@ -406,60 +403,71 @@ def get_nchmf_landslide_warning():
         'User-Agent': HEADERS_DEFAULT['User-Agent'],
         'X-Requested-With': 'XMLHttpRequest'
     }
-    payload = {"sogiodubao": "6", "date": date_param}
     
     LEVEL_MAP = {1: "Trung bình", 2: "Cao", 3: "Rất cao"}
     
-    try:
-        res = requests.post(NCHMF_CANHBAO_URL, data=payload, headers=headers, verify=False, timeout=12)
-        if res.status_code != 200:
-            return {"status": "error", "message": f"HTTP {res.status_code}", "has_warning": False, "count": 0, "alerts": [], "updated_at": now_str}
-            
-        data = res.json()
-        alerts = []
+    # Thử lần lượt mốc giờ hiện tại, nếu rỗng thì thử mốc giờ trước đó (do NCHMF cập nhật bản tin theo khung giờ)
+    candidate_dates = [
+        now_vn.strftime("%Y-%m-%d %H:00:00"),
+        (now_vn - timedelta(hours=1)).strftime("%Y-%m-%d %H:00:00"),
+        (now_vn - timedelta(hours=2)).strftime("%Y-%m-%d %H:00:00"),
+        now_vn.strftime("%Y-%m-%d 00:00:00")
+    ]
+    
+    items_list = []
+    
+    for date_param in candidate_dates:
+        payload = {"sogiodubao": "6", "date": date_param}
+        try:
+            res = requests.post(NCHMF_CANHBAO_URL, data=payload, headers=headers, verify=False, timeout=10)
+            if res.status_code == 200:
+                data = res.json()
+                if isinstance(data, list) and len(data) > 0:
+                    items_list = data
+                    break
+        except Exception:
+            continue
+
+    if not items_list:
+        return {"status": "success", "has_warning": False, "count": 0, "alerts": [], "updated_at": now_str}
+
+    alerts = []
+    for item in items_list:
+        if not isinstance(item, dict):
+            continue
         
-        items_list = data if isinstance(data, list) else []
-
-        for item in items_list:
-            if not isinstance(item, dict):
-                continue
+        # Bắt tên tỉnh (chủ động check nhiều key phòng khi NCHMF đổi tên key)
+        ten_tinh = str(item.get("province_name") or item.get("ten_tinh") or item.get("provinceName") or "")
+        
+        if "thanh" in ten_tinh.lower() and ("hoá" in ten_tinh.lower() or "hóa" in ten_tinh.lower()):
+            xa_2cap = (
+                item.get("commune_name_2cap") or 
+                item.get("commune_name") or 
+                item.get("ten_xa_2cap") or 
+                item.get("ten_xa") or 
+                "Chưa rõ"
+            )
             
-            # Đọc đúng key tên tỉnh từ API NCHMF
-            ten_tinh = str(item.get("province_name") or item.get("ten_tinh") or "")
+            lq_val = item.get("lu_quet") or item.get("CapCB_LQ")
+            sl_val = item.get("sat_lo") or item.get("CapCB_SL")
             
-            if "thanh" in ten_tinh.lower() and ("hoá" in ten_tinh.lower() or "hóa" in ten_tinh.lower()):
-                # Đọc chính xác key tên xã/địa bàn
-                xa_2cap = (
-                    item.get("commune_name_2cap") or 
-                    item.get("commune_name") or 
-                    item.get("ten_xa_2cap") or 
-                    item.get("ten_xa") or 
-                    "Chưa rõ"
-                )
-                
-                # Map mức độ cảnh báo từ số (1, 2, 3) sang chuỗi
-                lq_val = item.get("lu_quet") or item.get("CapCB_LQ")
-                sl_val = item.get("sat_lo") or item.get("CapCB_SL")
-                
-                lu_quet = LEVEL_MAP.get(lq_val, f"Mức {lq_val}" if lq_val else "Mức trung bình")
-                sat_lo = LEVEL_MAP.get(sl_val, f"Mức {sl_val}" if sl_val else "Mức trung bình")
-                
-                xa_id = item.get("commune_id_2cap") or item.get("commune_id") or xa_2cap
-                alert_key = f"{xa_id}_{xa_2cap}_{lu_quet}_{sat_lo}"
-                
-                if not any(a['key'] == alert_key for a in alerts):
-                    alerts.append({
-                        "key": alert_key,
-                        "xa_2cap": xa_2cap,
-                        "xa_hc": "",
-                        "lu_quet": lu_quet,
-                        "sat_lo": sat_lo
-                    })
+            # Nếu lq_val/sl_val là int thì map, nếu là string sẵn ("Mức trung bình") thì giữ nguyên
+            lu_quet = LEVEL_MAP.get(lq_val, lq_val if isinstance(lq_val, str) else "Mức trung bình")
+            sat_lo = LEVEL_MAP.get(sl_val, sl_val if isinstance(sl_val, str) else "Mức trung bình")
+            
+            xa_id = item.get("commune_id_2cap") or item.get("commune_id") or xa_2cap
+            alert_key = f"{xa_id}_{xa_2cap}_{lu_quet}_{sat_lo}"
+            
+            if not any(a['key'] == alert_key for a in alerts):
+                alerts.append({
+                    "key": alert_key,
+                    "xa_2cap": xa_2cap,
+                    "xa_hc": "",
+                    "lu_quet": lu_quet,
+                    "sat_lo": sat_lo
+                })
 
-        return {"status": "success", "has_warning": len(alerts) > 0, "count": len(alerts), "alerts": alerts, "updated_at": now_str}
-    except Exception as e:
-        return {"status": "error", "message": str(e), "has_warning": False, "count": 0, "alerts": [], "updated_at": now_str}
-def format_nchmf_message(data, is_auto=False):
+    return {"status": "success", "has_warning": len(alerts) > 0, "count": len(alerts), "alerts": alerts, "updated_at": now_str}
     if data.get("status") == "error":
         return f"⛰️ <b>[CẢNH BÁO LŨ QUÉT & SẠT LỞ]</b>\n🕒 <i>Cập nhật:</i> {data.get('updated_at')}\n\n❌ <b>LỖI KẾT NỐI:</b> <code>{data.get('message')}</code>"
 
