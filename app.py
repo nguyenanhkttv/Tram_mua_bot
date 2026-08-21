@@ -404,13 +404,15 @@ def get_nchmf_landslide_warning():
     }
     payload = {"sogiodubao": "6", "date": date_param}
     
+    # Thứ tự ưu tiên nguy cơ để chọn mức cao nhất nếu trùng xã 2 cấp
+    SEVERITY_ORDER = {"Rất cao": 3, "Cao": 2, "Trung bình": 1, "Mức rất cao": 3, "Mức cao": 2, "Mức trung bình": 1}
+
     try:
         res = requests.post(NCHMF_CANHBAO_URL, data=payload, headers=headers, verify=False, timeout=12)
         if res.status_code != 200:
             return {"status": "error", "message": f"HTTP {res.status_code}", "has_warning": False, "count": 0, "alerts": [], "updated_at": now_str}
             
         data = res.json()
-        alerts = []
         
         items_list = []
         if isinstance(data, list):
@@ -423,62 +425,74 @@ def get_nchmf_landslide_warning():
             if not items_list:
                 items_list = [v for v in data.values() if isinstance(v, dict)]
 
+        # Dictionary dùng để gom nhóm theo xã 2 cấp (đảm bảo không trùng lặp)
+        dict_2cap = {}
+
         for item in items_list:
             if not isinstance(item, dict):
                 continue
             
-            # Lấy tên tỉnh
             ten_tinh = str(
                 item.get("provinceName") or 
                 item.get("provinceName_2cap") or 
-                item.get("ten_tinh") or 
-                item.get("Tinh") or ""
+                item.get("ten_tinh") or ""
             )
             
             if "thanh" in ten_tinh.lower() and ("hoá" in ten_tinh.lower() or "hóa" in ten_tinh.lower()):
-                # Lấy tên xã 2 cấp chuẩn theo Response
-                xa_2cap = (
-                    item.get("commune_name_2cap") or 
-                    item.get("commune_name") or 
-                    item.get("ten_xa_2cap") or 
-                    item.get("xaname_2cap") or 
-                    item.get("ten_xa") or 
-                    "Chưa rõ"
-                )
+                # Ưu tiên tuyệt đối commune_name_2cap
+                xa_2cap = (item.get("commune_name_2cap") or item.get("ten_xa_2cap") or item.get("commune_name") or "Chưa rõ").strip()
+                huyen = (item.get("district_name") or item.get("ten_huyen") or "").strip()
                 
-                xa_hc = item.get("commune_name") or item.get("ten_xa") or xa_2cap
-                huyen = item.get("district_name") or item.get("ten_huyen") or ""
+                # ID định danh theo 2 cấp
+                key_2cap = item.get("commune_id_2cap") or f"{huyen}_{xa_2cap}"
                 
-                # Lấy mức nguy cơ chuẩn từ key nguycoluquet & nguycosatlo
-                lu_quet = item.get("nguycoluquet") or item.get("lu_quet") or item.get("CapCB_LQ") or item.get("warningLevelLQ") or "Trung bình"
-                sat_lo = item.get("nguycosatlo") or item.get("sat_lo") or item.get("CapCB_SL") or item.get("warningLevelSL") or "Trung bình"
+                # Lấy mức nguy cơ
+                lq_raw = item.get("nguycoluquet") or item.get("lu_quet") or "Trung bình"
+                sl_raw = item.get("nguycosatlo") or item.get("sat_lo") or "Trung bình"
                 
-                # Định dạng lại chuỗi hiển thị nếu mức trả về là "Cao" -> "Mức cao"
-                if lu_quet in ["Cao", "Rất cao"]:
-                    lu_quet = f"Mức {lu_quet.lower()}"
-                elif not lu_quet.startswith("Mức"):
-                    lu_quet = f"Mức {lu_quet.lower()}"
-                    
-                if sat_lo in ["Cao", "Rất cao"]:
-                    sat_lo = f"Mức {sat_lo.lower()}"
-                elif not sat_lo.startswith("Mức"):
-                    sat_lo = f"Mức {sat_lo.lower()}"
+                # Chuẩn hóa chuỗi hiển thị
+                lq_str = lq_raw if str(lq_raw).startswith("Mức") else f"Mức {str(lq_raw).lower()}"
+                sl_str = sl_raw if str(sl_raw).startswith("Mức") else f"Mức {str(sl_raw).lower()}"
 
-                # ID định danh unique
-                xa_id = item.get("commune_id_2cap") or item.get("commune_id") or item.get("id") or xa_2cap
-                alert_key = f"{xa_id}_{xa_2cap}_{lu_quet}_{sat_lo}"
-                
-                if not any(a['key'] == alert_key for a in alerts):
-                    alerts.append({
-                        "key": alert_key,
+                if key_2cap not in dict_2cap:
+                    dict_2cap[key_2cap] = {
+                        "key": str(key_2cap),
                         "huyen": huyen,
                         "xa_2cap": xa_2cap,
-                        "xa_hc": xa_hc,
-                        "lu_quet": lu_quet,
-                        "sat_lo": sat_lo
-                    })
+                        "lu_quet": lq_str,
+                        "sat_lo": sl_str,
+                        "_lq_val": SEVERITY_ORDER.get(lq_raw, 1),
+                        "_sl_val": SEVERITY_ORDER.get(sl_raw, 1)
+                    }
+                else:
+                    # Nếu xã 2 cấp đã tồn tại, cập nhật mức cảnh báo nếu có điểm nguy cơ cao hơn
+                    existing = dict_2cap[key_2cap]
+                    if SEVERITY_ORDER.get(lq_raw, 1) > existing["_lq_val"]:
+                        existing["lu_quet"] = lq_str
+                        existing["_lq_val"] = SEVERITY_ORDER.get(lq_raw, 1)
+                    if SEVERITY_ORDER.get(sl_raw, 1) > existing["_sl_val"]:
+                        existing["sat_lo"] = sl_str
+                        existing["_sl_val"] = SEVERITY_ORDER.get(sl_raw, 1)
 
-        return {"status": "success", "has_warning": len(alerts) > 0, "count": len(alerts), "alerts": alerts, "updated_at": now_str}
+        # Chuyển dict sang list alerts sạch
+        alerts = []
+        for item in dict_2cap.values():
+            alerts.append({
+                "key": item["key"],
+                "huyen": item["huyen"],
+                "xa_2cap": item["xa_2cap"],
+                "lu_quet": item["lu_quet"],
+                "sat_lo": item["sat_lo"]
+            })
+
+        # count và alerts đều đồng bộ 54 xã
+        return {
+            "status": "success", 
+            "has_warning": len(alerts) > 0, 
+            "count": len(alerts), 
+            "alerts": alerts, 
+            "updated_at": now_str
+        }
     except Exception as e:
         return {"status": "error", "message": str(e), "has_warning": False, "count": 0, "alerts": [], "updated_at": now_str}
 def format_nchmf_message(data, is_auto=False):
