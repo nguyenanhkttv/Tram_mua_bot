@@ -412,59 +412,59 @@ def get_nchmf_landslide_warning():
     ]
     
     items_list = []
-    for date_param in candidate_dates:
-        payload = {"sogiodubao": "6", "date": date_param}
-        try:
-            res = requests.post(NCHMF_CANHBAO_URL, data=payload, headers=headers, verify=False, timeout=10)
-            if res.status_code == 200:
-                data = res.json()
-                if isinstance(data, list) and len(data) > 0:
-                    items_list = data
-                    break
-        except Exception:
-            continue
+    
+    try:
+        for date_param in candidate_dates:
+            payload = {"sogiodubao": "6", "date": date_param}
+            try:
+                res = requests.post(NCHMF_CANHBAO_URL, data=payload, headers=headers, verify=False, timeout=10)
+                if res.status_code == 200:
+                    data = res.json()
+                    if isinstance(data, list) and len(data) > 0:
+                        items_list = data
+                        break
+            except Exception:
+                continue
 
-    if not items_list:
-        return {"status": "success", "has_warning": False, "count": 0, "alerts": [], "updated_at": now_str}
+        if not items_list:
+            return {"status": "success", "has_warning": False, "count": 0, "alerts": [], "updated_at": now_str}
 
-    alerts = []
-    for item in items_list:
-        if not isinstance(item, dict):
-            continue
-        
-        ten_tinh = str(item.get("provincename") or item.get("province_name") or item.get("ten_tinh") or "")
-        
-        if "thanh" in ten_tinh.lower() and ("hoá" in ten_tinh.lower() or "hóa" in ten_tinh.lower()):
-            xa_2cap = (
-                item.get("commune_name_2cap") or 
-                item.get("commune_name") or 
-                item.get("ten_xa") or 
-                "Chưa rõ"
-            )
+        alerts = []
+        for item in items_list:
+            if not isinstance(item, dict):
+                continue
             
-            lu_quet = item.get("nguycoluquet") or item.get("lu_quet") or "Trung bình"
-            sat_lo = item.get("nguycosatlo") or item.get("sat_lo") or "Trung bình"
+            ten_tinh = str(item.get("provincename") or item.get("province_name") or item.get("ten_tinh") or "")
             
-            lu_quet_str = lu_quet if "Mức" in str(lu_quet) else f"Mức {str(lu_quet).lower()}"
-            sat_lo_str = sat_lo if "Mức" in str(sat_lo) else f"Mức {str(sat_lo).lower()}"
-            
-            # Lấy giá trị xa_2cap đúng từ item
-        xa_2cap_val = item.get("commune_id_2cap") or item.get("id") or item.get("xa_2cap", "")
-        xa_id = xa_2cap_val
-        alert_key = f"{xa_id}_{xa_2cap_val}_{lu_quet_str}_{sat_lo_str}"
-
-        # Kiểm tra trùng lặp bằng set comprehension hoặc any()
-        if not any(a.get('key') == alert_key for a in alerts):
-            alerts.append({
-                "key": alert_key,
-                "xa_2cap": xa_2cap_val,
-                "xa_hc": item.get("xa_hc", ""),
-                "lu_quet": lu_quet_str,
-                "sat_lo": sat_lo_str
-            })
+            if "thanh" in ten_tinh.lower() and ("hoá" in ten_tinh.lower() or "hóa" in ten_tinh.lower()):
+                xa_2cap = (
+                    item.get("commune_name_2cap") or 
+                    item.get("commune_name") or 
+                    item.get("ten_xa") or 
+                    "Chưa rõ"
+                )
+                
+                lu_quet = item.get("nguycoluquet") or item.get("lu_quet") or "Trung bình"
+                sat_lo = item.get("nguycosatlo") or item.get("sat_lo") or "Trung bình"
+                
+                lu_quet_str = lu_quet if "Mức" in str(lu_quet) else f"Mức {str(lu_quet).lower()}"
+                sat_lo_str = sat_lo if "Mức" in str(sat_lo) else f"Mức {str(sat_lo).lower()}"
+                
+                xa_id = item.get("commune_id_2cap") or item.get("id") or xa_2cap
+                alert_key = f"{xa_id}_{xa_2cap}_{lu_quet_str}_{sat_lo_str}"
+                
+                if not any(a.get('key') == alert_key for a in alerts):
+                    alerts.append({
+                        "key": alert_key,
+                        "xa_2cap": xa_2cap,
+                        "xa_hc": "",
+                        "lu_quet": lu_quet_str,
+                        "sat_lo": sat_lo_str
+                    })
 
         return {"status": "success", "has_warning": len(alerts) > 0, "count": len(alerts), "alerts": alerts, "updated_at": now_str}
-            except Exception as e:
+
+    except Exception as e:
         return {"status": "error", "message": str(e), "has_warning": False, "count": 0, "alerts": [], "updated_at": now_str}
 
 def format_nchmf_message(data, is_auto=False):
