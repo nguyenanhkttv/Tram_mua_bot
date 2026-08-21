@@ -395,78 +395,92 @@ def format_vndms_message(data, is_auto=False):
 def get_nchmf_landslide_warning():
     now_vn = datetime.utcnow() + timedelta(hours=7)
     now_str = now_vn.strftime("%H:%M:%S %d/%m/%Y")
+    date_param = now_vn.strftime("%Y-%m-%d 00:00:00")
     
     headers = {
-        'Accept': '*/*',
         'Content-Type': 'application/x-www-form-urlencoded; charset=UTF-8',
-        'Origin': 'https://luquetsatlo.nchmf.gov.vn',
         'User-Agent': HEADERS_DEFAULT['User-Agent'],
         'X-Requested-With': 'XMLHttpRequest'
     }
-    
-    candidate_dates = [
-        now_vn.strftime("%Y-%m-%d %H:00:00"),
-        (now_vn - timedelta(hours=1)).strftime("%Y-%m-%d %H:00:00"),
-        (now_vn - timedelta(hours=2)).strftime("%Y-%m-%d %H:00:00"),
-        now_vn.strftime("%Y-%m-%d 00:00:00")
-    ]
-    
-    items_list = []
+    payload = {"sogiodubao": "6", "date": date_param}
     
     try:
-        for date_param in candidate_dates:
-            payload = {"sogiodubao": "6", "date": date_param}
-            try:
-                res = requests.post(NCHMF_CANHBAO_URL, data=payload, headers=headers, verify=False, timeout=10)
-                if res.status_code == 200:
-                    data = res.json()
-                    if isinstance(data, list) and len(data) > 0:
-                        items_list = data
-                        break
-            except Exception:
-                continue
-
-        if not items_list:
-            return {"status": "success", "has_warning": False, "count": 0, "alerts": [], "updated_at": now_str}
-
+        res = requests.post(NCHMF_CANHBAO_URL, data=payload, headers=headers, verify=False, timeout=12)
+        if res.status_code != 200:
+            return {"status": "error", "message": f"HTTP {res.status_code}", "has_warning": False, "count": 0, "alerts": [], "updated_at": now_str}
+            
+        data = res.json()
         alerts = []
+        
+        items_list = []
+        if isinstance(data, list):
+            items_list = data
+        elif isinstance(data, dict):
+            for k in ["data", "result", "results", "list", "content", "ds"]:
+                if isinstance(data.get(k), list):
+                    items_list = data.get(k)
+                    break
+            if not items_list:
+                items_list = [v for v in data.values() if isinstance(v, dict)]
+
         for item in items_list:
             if not isinstance(item, dict):
                 continue
             
-            ten_tinh = str(item.get("provincename") or item.get("province_name") or item.get("ten_tinh") or "")
+            # Lấy tên tỉnh
+            ten_tinh = str(
+                item.get("provinceName") or 
+                item.get("provinceName_2cap") or 
+                item.get("ten_tinh") or 
+                item.get("Tinh") or ""
+            )
             
             if "thanh" in ten_tinh.lower() and ("hoá" in ten_tinh.lower() or "hóa" in ten_tinh.lower()):
+                # Lấy tên xã 2 cấp chuẩn theo Response
                 xa_2cap = (
                     item.get("commune_name_2cap") or 
                     item.get("commune_name") or 
+                    item.get("ten_xa_2cap") or 
+                    item.get("xaname_2cap") or 
                     item.get("ten_xa") or 
                     "Chưa rõ"
                 )
                 
-                lu_quet = item.get("nguycoluquet") or item.get("lu_quet") or "Trung bình"
-                sat_lo = item.get("nguycosatlo") or item.get("sat_lo") or "Trung bình"
+                xa_hc = item.get("commune_name") or item.get("ten_xa") or xa_2cap
+                huyen = item.get("district_name") or item.get("ten_huyen") or ""
                 
-                lu_quet_str = lu_quet if "Mức" in str(lu_quet) else f"Mức {str(lu_quet).lower()}"
-                sat_lo_str = sat_lo if "Mức" in str(sat_lo) else f"Mức {str(sat_lo).lower()}"
+                # Lấy mức nguy cơ chuẩn từ key nguycoluquet & nguycosatlo
+                lu_quet = item.get("nguycoluquet") or item.get("lu_quet") or item.get("CapCB_LQ") or item.get("warningLevelLQ") or "Trung bình"
+                sat_lo = item.get("nguycosatlo") or item.get("sat_lo") or item.get("CapCB_SL") or item.get("warningLevelSL") or "Trung bình"
                 
-                xa_id = item.get("commune_id_2cap") or item.get("id") or xa_2cap
-                alert_key = f"{xa_id}_{xa_2cap}_{lu_quet_str}_{sat_lo_str}"
+                # Định dạng lại chuỗi hiển thị nếu mức trả về là "Cao" -> "Mức cao"
+                if lu_quet in ["Cao", "Rất cao"]:
+                    lu_quet = f"Mức {lu_quet.lower()}"
+                elif not lu_quet.startswith("Mức"):
+                    lu_quet = f"Mức {lu_quet.lower()}"
+                    
+                if sat_lo in ["Cao", "Rất cao"]:
+                    sat_lo = f"Mức {sat_lo.lower()}"
+                elif not sat_lo.startswith("Mức"):
+                    sat_lo = f"Mức {sat_lo.lower()}"
+
+                # ID định danh unique
+                xa_id = item.get("commune_id_2cap") or item.get("commune_id") or item.get("id") or xa_2cap
+                alert_key = f"{xa_id}_{xa_2cap}_{lu_quet}_{sat_lo}"
                 
-                if not any(a.get('key') == alert_key for a in alerts):
+                if not any(a['key'] == alert_key for a in alerts):
                     alerts.append({
                         "key": alert_key,
+                        "huyen": huyen,
                         "xa_2cap": xa_2cap,
-                        "xa_hc": "",
-                        "lu_quet": lu_quet_str,
-                        "sat_lo": sat_lo_str
+                        "xa_hc": xa_hc,
+                        "lu_quet": lu_quet,
+                        "sat_lo": sat_lo
                     })
 
         return {"status": "success", "has_warning": len(alerts) > 0, "count": len(alerts), "alerts": alerts, "updated_at": now_str}
-
     except Exception as e:
         return {"status": "error", "message": str(e), "has_warning": False, "count": 0, "alerts": [], "updated_at": now_str}
-
 def format_nchmf_message(data, is_auto=False):
     if data.get("status") == "error":
         return f"⛰️ <b>[CẢNH BÁO LŨ QUÉT & SẠT LỞ]</b>\n🕒 <i>Cập nhật:</i> {data.get('updated_at')}\n\n❌ <b>LỖI KẾT NỐI:</b> <code>{data.get('message')}</code>"
