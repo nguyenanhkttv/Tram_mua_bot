@@ -404,7 +404,6 @@ def get_nchmf_landslide_warning():
         'X-Requested-With': 'XMLHttpRequest'
     }
     
-    # Dò mốc giờ hiện tại, nếu rỗng dò lùi lại giờ trước đó
     candidate_dates = [
         now_vn.strftime("%Y-%m-%d %H:00:00"),
         (now_vn - timedelta(hours=1)).strftime("%Y-%m-%d %H:00:00"),
@@ -433,11 +432,9 @@ def get_nchmf_landslide_warning():
         if not isinstance(item, dict):
             continue
         
-        # Bắt đúng key provincename theo DevTools thực tế
         ten_tinh = str(item.get("provincename") or item.get("province_name") or item.get("ten_tinh") or "")
         
         if "thanh" in ten_tinh.lower() and ("hoá" in ten_tinh.lower() or "hóa" in ten_tinh.lower()):
-            # Bắt đúng key commune_name_2cap
             xa_2cap = (
                 item.get("commune_name_2cap") or 
                 item.get("commune_name") or 
@@ -445,24 +442,22 @@ def get_nchmf_landslide_warning():
                 "Chưa rõ"
             )
             
-            # Bắt đúng key nguycoluquet và nguycosatlo
             lu_quet = item.get("nguycoluquet") or item.get("lu_quet") or "Trung bình"
             sat_lo = item.get("nguycosatlo") or item.get("sat_lo") or "Trung bình"
             
-            # Định dạng chữ "Mức ..." cho đẹp thông báo
-            lu_quet_str = lu_quet if "Mức" in str(lu_quet) else f"Mức {lu_quet.lower()}"
-            sat_lo_str = sat_lo if "Mức" in str(sat_lo) else f"Mức {sat_lo.lower()}"
+            lu_quet_str = lu_quet if "Mức" in str(lu_quet) else f"Mức {str(lu_quet).lower()}"
+            sat_lo_str = sat_lo if "Mức" in str(sat_lo) else f"Mức {str(sat_lo).lower()}"
             
             xa_id = item.get("commune_id_2cap") or item.get("id") or xa_2cap
             alert_key = f"{xa_id}_{xa_2cap}_{lu_quet_str}_{sat_lo_str}"
             
-        if not any(a['key'] == alert_key for a in alerts):
-            alerts.append({
-                "key": alert_key,
-                "xa_2cap": xa_2cap,
-                "xa_hc": "",
-                "lu_quet": lu_quet_str,
-                "sat_lo": sat_lo_str
+            if not any(a['key'] == alert_key for a in alerts):
+                alerts.append({
+                    "key": alert_key,
+                    "xa_2cap": xa_2cap,
+                    "xa_hc": "",
+                    "lu_quet": lu_quet_str,
+                    "sat_lo": sat_lo_str
                 })
 
     return {"status": "success", "has_warning": len(alerts) > 0, "count": len(alerts), "alerts": alerts, "updated_at": now_str}
