@@ -395,14 +395,20 @@ def format_vndms_message(data, is_auto=False):
 def get_nchmf_landslide_warning():
     now_vn = datetime.utcnow() + timedelta(hours=7)
     now_str = now_vn.strftime("%H:%M:%S %d/%m/%Y")
-    date_param = now_vn.strftime("%Y-%m-%d 00:00:00")
+    
+    # Format date chính xác theo giờ hiện tại (VD: 2026-08-21 23:00:00)
+    date_param = now_vn.strftime("%Y-%m-%d %H:00:00")
     
     headers = {
+        'Accept': '*/*',
         'Content-Type': 'application/x-www-form-urlencoded; charset=UTF-8',
+        'Origin': 'https://luquetsatlo.nchmf.gov.vn',
         'User-Agent': HEADERS_DEFAULT['User-Agent'],
         'X-Requested-With': 'XMLHttpRequest'
     }
     payload = {"sogiodubao": "6", "date": date_param}
+    
+    LEVEL_MAP = {1: "Trung bình", 2: "Cao", 3: "Rất cao"}
     
     try:
         res = requests.post(NCHMF_CANHBAO_URL, data=payload, headers=headers, verify=False, timeout=12)
@@ -412,47 +418,40 @@ def get_nchmf_landslide_warning():
         data = res.json()
         alerts = []
         
-        items_list = []
-        if isinstance(data, list):
-            items_list = data
-        elif isinstance(data, dict):
-            for k in ["data", "result", "results", "list", "content", "ds"]:
-                if isinstance(data.get(k), list):
-                    items_list = data.get(k)
-                    break
-            if not items_list:
-                items_list = [v for v in data.values() if isinstance(v, dict)]
+        items_list = data if isinstance(data, list) else []
 
         for item in items_list:
             if not isinstance(item, dict):
                 continue
             
-            ten_tinh = str(item.get("ten_tinh") or item.get("Tinh") or item.get("provinceName") or "")
+            # Đọc đúng key tên tỉnh từ API NCHMF
+            ten_tinh = str(item.get("province_name") or item.get("ten_tinh") or "")
             
             if "thanh" in ten_tinh.lower() and ("hoá" in ten_tinh.lower() or "hóa" in ten_tinh.lower()):
-                # Lấy tên địa bàn/xã linh hoạt theo đúng key trả về của NCHMF
+                # Đọc chính xác key tên xã/địa bàn
                 xa_2cap = (
+                    item.get("commune_name_2cap") or 
+                    item.get("commune_name") or 
                     item.get("ten_xa_2cap") or 
-                    item.get("xaname_2cap") or 
                     item.get("ten_xa") or 
-                    item.get("communeName") or 
-                    item.get("ten_huyen") or 
                     "Chưa rõ"
                 )
-                xa_hc = item.get("ten_xa", "")
                 
-                lu_quet = item.get("lu_quet") or item.get("CapCB_LQ") or item.get("warningLevelLQ") or "Mức trung bình"
-                sat_lo = item.get("sat_lo") or item.get("CapCB_SL") or item.get("warningLevelSL") or "Mức trung bình"
+                # Map mức độ cảnh báo từ số (1, 2, 3) sang chuỗi
+                lq_val = item.get("lu_quet") or item.get("CapCB_LQ")
+                sl_val = item.get("sat_lo") or item.get("CapCB_SL")
                 
-                # Dùng ID thực tế của xã/huyện hoặc kết hợp tên xã + index để làm unique key
-                xa_id = item.get("xaid_2cap") or item.get("ma_xa") or item.get("id") or xa_2cap
+                lu_quet = LEVEL_MAP.get(lq_val, f"Mức {lq_val}" if lq_val else "Mức trung bình")
+                sat_lo = LEVEL_MAP.get(sl_val, f"Mức {sl_val}" if sl_val else "Mức trung bình")
+                
+                xa_id = item.get("commune_id_2cap") or item.get("commune_id") or xa_2cap
                 alert_key = f"{xa_id}_{xa_2cap}_{lu_quet}_{sat_lo}"
                 
                 if not any(a['key'] == alert_key for a in alerts):
                     alerts.append({
                         "key": alert_key,
                         "xa_2cap": xa_2cap,
-                        "xa_hc": xa_hc,
+                        "xa_hc": "",
                         "lu_quet": lu_quet,
                         "sat_lo": sat_lo
                     })
@@ -460,7 +459,6 @@ def get_nchmf_landslide_warning():
         return {"status": "success", "has_warning": len(alerts) > 0, "count": len(alerts), "alerts": alerts, "updated_at": now_str}
     except Exception as e:
         return {"status": "error", "message": str(e), "has_warning": False, "count": 0, "alerts": [], "updated_at": now_str}
-
 def format_nchmf_message(data, is_auto=False):
     if data.get("status") == "error":
         return f"⛰️ <b>[CẢNH BÁO LŨ QUÉT & SẠT LỞ]</b>\n🕒 <i>Cập nhật:</i> {data.get('updated_at')}\n\n❌ <b>LỖI KẾT NỐI:</b> <code>{data.get('message')}</code>"
