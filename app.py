@@ -27,6 +27,8 @@ HEADERS_DEFAULT = {
     'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
 }
 
+MAX_MSG_LEN = 3800  # Ngưỡng an toàn gửi Telegram
+
 app = Flask(__name__)
 
 # ==================== LƯU TRỮ CHAT ID VÀ TRẠNG THÁI GỬI ====================
@@ -54,10 +56,11 @@ SENT_VNDMS_IDS = set()
 SENT_LANDSLIDE_KEYS = set()
 STATION_PREVIOUS_STATUS = {}
 
-# Lưu mức cảnh báo mưa đã gửi cho từng trạm theo ngày (Key -> Mức: 51 hoặc 100) để xử lý báo mới và báo tiếp khi vượt 100mm
-SENT_RAIN_LEVELS = {}
+# Lưu vết mốc mưa đã phát cảnh báo để không spam
+SENT_VRAIN_LEVELS = {}
+SENT_KTTV_LEVELS = {}
 
-# ==================== LOGIC MƯA TO CHUẨN THỦY VĂN (19:00 ➔ 18:59) ====================
+# ==================== LOGIC THỜI GIAN THỦY VĂN (19:00 ➔ 18:59) ====================
 def get_hydro_time_range():
     now_vn = datetime.utcnow() + timedelta(hours=7)
     if now_vn.hour < 19:
@@ -68,10 +71,89 @@ def get_hydro_time_range():
         end_dt = (now_vn + timedelta(days=1)).replace(hour=18, minute=59, second=59)
     return start_dt, end_dt, now_vn.strftime("%H:%M:%S %d/%m/%Y")
 
-def calculate_kttv_rain_19h_to_18h59(start_dt, end_dt):
-    total_rain_by_station = {}
+# ==================== LOGIC MƯA VRAIN.VN (≥ 30mm) ====================
+def fetch_vrain_rain_stations(min_rain=30.0):
+    start_dt, end_dt, updated_at = get_hydro_time_range()
     start_str = start_dt.strftime("%Y-%m-%d %H:%M:%S")
     end_str = end_dt.strftime("%Y-%m-%d %H:%M:%S")
+    alerts = []
+    seen_stations = set()
+
+    for group_id in [None, 33]:
+        try:
+            params = {"groupID": group_id, "from": start_str, "to": end_str}
+            res = requests.get(VRAIN_DETAILS_URL, params=params, headers=HEADERS_DEFAULT, timeout=12)
+            if res.status_code == 200:
+                data = res.json()
+                details = data.get("details", data) if isinstance(data, dict) else {}
+                stats = details.get("stats", details.get("data", [])) if isinstance(data, dict) else (data if isinstance(data, list) else [])
+                
+                for st_group in stats:
+                    stations = st_group.get("stations", [st_group] if isinstance(st_group, dict) and ("name" in st_group or "stationName" in st_group) else [])
+                    for st in stations:
+                        if not isinstance(st, dict):
+                            continue
+                        
+                        city_id = str(st.get("cityID", ""))
+                        city_name = str(st.get("cityName", "") or st.get("province", "") or st.get("area", "") or st.get("stationLocation", ""))
+                        
+                        is_thanh_hoa = (city_id in ["27", "38"] or "thanh hó" in city_name.lower() or "thanh hoa" in city_name.lower())
+                        if not is_thanh_hoa:
+                            continue
+
+                        depth_raw = st.get("sumDepth") or st.get("depth") or st.get("value") or 0
+                        try:
+                            rain = float(depth_raw)
+                        except (ValueError, TypeError):
+                            rain = 0.0
+
+                        time_points = st.get("timePoints", []) or st.get("intervals", []) or []
+                        tp_sum = sum([float(tp.get("val") or tp.get("depth") or tp.get("value") or 0) for tp in time_points if isinstance(tp, dict)])
+                        rain = max(rain, tp_sum)
+
+                        if rain >= min_rain:
+                            name = st.get("name") or st.get("stationName") or st.get("area") or "Trạm không tên"
+                            st_key = name.strip().lower()
+                            if st_key not in seen_stations:
+                                seen_stations.add(st_key)
+                                alerts.append({
+                                    "key": f"vrain_{st_key}_{start_str[:10]}",
+                                    "name": name,
+                                    "location": st.get("stationLocation") or st.get("area") or "Thanh Hóa",
+                                    "rain": round(rain, 1)
+                                })
+        except Exception as e:
+            print(f"❌ Lỗi Vrain Details group {group_id}: {e}")
+
+    return {
+        "has_warning": len(alerts) > 0,
+        "count": len(alerts),
+        "alerts": alerts,
+        "time_range": f"{start_dt.strftime('%H:%M %d/%m')} ➔ {end_dt.strftime('%H:%M %d/%m')}",
+        "updated_at": updated_at
+    }
+
+def format_vrain_message(data):
+    msg = f"🌧️ <b>[CẢNH BÁO MƯA VRAIN.VN THANH HÓA (≥ 30mm)]</b>\n"
+    msg += f"🕒 <i>Cập nhật:</i> <code>{data['updated_at']}</code>\n"
+    msg += f"📅 <i>Khung giờ tính:</i> <code>{data['time_range']}</code>\n"
+    msg += f"📊 <i>Số trạm đạt ngưỡng:</i> <b>{data['count']} trạm</b>\n"
+    msg += "───────────────────\n"
+
+    for idx, alert in enumerate(data['alerts'], 1):
+        msg += f"📍 <b>{idx}. Trạm: {alert['name']}</b> ({alert['location']})\n"
+        msg += f" 🌧️ <i>Lượng mưa tích lũy:</i> <b>{alert['rain']} mm</b>\n\n"
+
+    msg += "🌐 <i>Nguồn dữ liệu: vrain.vn</i>"
+    return msg
+
+# ==================== LOGIC MƯA KTTV.VRAIN.VN (≥ 30mm) ====================
+def fetch_kttv_rain_stations(min_rain=30.0):
+    start_dt, end_dt, updated_at = get_hydro_time_range()
+    start_str = start_dt.strftime("%Y-%m-%d %H:%M:%S")
+    end_str = end_dt.strftime("%Y-%m-%d %H:%M:%S")
+    alerts = []
+    seen_stations = set()
 
     try:
         params = {"groupID": 14, "from": start_str, "to": end_str}
@@ -90,19 +172,12 @@ def calculate_kttv_rain_19h_to_18h59(start_dt, end_dt):
                     city_id = str(st.get("cityID", ""))
                     city_name = str(st.get("cityName", "") or st.get("province", "") or st.get("stationLocation", ""))
                     
-                    is_thanh_hoa = (
-                        city_id in ["27", "38"] or 
-                        "thanh hó" in city_name.lower() or 
-                        "thanh hoa" in city_name.lower()
-                    )
+                    is_thanh_hoa = (city_id in ["27", "38"] or "thanh hó" in city_name.lower() or "thanh hoa" in city_name.lower())
                     if not is_thanh_hoa:
                         continue
                         
                     st_name = st.get("stationName") or st.get("area") or st.get("name") or "Trạm không tên"
                     st_key = st_name.strip().lower()
-
-                    if st_key not in total_rain_by_station:
-                        total_rain_by_station[st_key] = {"name": st_name, "rain": 0.0, "location": st.get("stationLocation", "Thanh Hóa")}
 
                     rain_val = 0.0
                     try:
@@ -111,96 +186,19 @@ def calculate_kttv_rain_19h_to_18h59(start_dt, end_dt):
                         pass
 
                     time_points = st.get("timePoints", []) or st.get("intervals", []) or []
-                    tp_sum = 0.0
-                    for tp in time_points:
-                        try:
-                            tp_sum += float(tp.get("val") or tp.get("depth") or tp.get("value") or 0)
-                        except (ValueError, TypeError):
-                            pass
-                            
-                    total_rain_by_station[st_key]["rain"] = max(rain_val, tp_sum)
+                    tp_sum = sum([float(tp.get("val") or tp.get("depth") or tp.get("value") or 0) for tp in time_points if isinstance(tp, dict)])
+                    rain_total = max(rain_val, tp_sum)
+
+                    if rain_total >= min_rain and st_key not in seen_stations:
+                        seen_stations.add(st_key)
+                        alerts.append({
+                            "key": f"kttv_{st_key}_{start_str[:10]}",
+                            "name": st_name,
+                            "location": st.get("stationLocation") or "Thanh Hóa",
+                            "rain": round(rain_total, 1)
+                        })
     except Exception as e:
-        print(f"❌ Lỗi KTTV: {e}")
-
-    return total_rain_by_station
-
-def fetch_heavy_rain_stations():
-    start_dt, end_dt, updated_at = get_hydro_time_range()
-    start_str = start_dt.strftime("%Y-%m-%d %H:%M:%S")
-    end_str = end_dt.strftime("%Y-%m-%d %H:%M:%S")
-    alerts = []
-    seen_stations = set()
-
-    # 1. Quét từ KTTV
-    kttv_data = calculate_kttv_rain_19h_to_18h59(start_dt, end_dt)
-    for st_key, st_info in kttv_data.items():
-        if st_info["rain"] >= 51.0:
-            seen_stations.add(st_key)
-            alerts.append({
-                "key": f"kttv_{st_key}_{start_str[:10]}",
-                "source": "kttv.vrain.vn",
-                "name": st_info["name"],
-                "location": st_info["location"],
-                "rain": round(st_info["rain"], 1)
-            })
-
-    # 2. Quét từ Vrain Details
-    for group_id in [None, 33, 14]:
-        try:
-            params_vrain = {"groupID": group_id, "from": start_str, "to": end_str}
-            res = requests.get(VRAIN_DETAILS_URL, params=params_vrain, headers=HEADERS_DEFAULT, timeout=12)
-            if res.status_code == 200:
-                data = res.json()
-                details = data.get("details", data) if isinstance(data, dict) else {}
-                stats = details.get("stats", details.get("data", [])) if isinstance(data, dict) else (data if isinstance(data, list) else [])
-                
-                for st_group in stats:
-                    stations = st_group.get("stations", [st_group] if isinstance(st_group, dict) and ("name" in st_group or "stationName" in st_group) else [])
-                    for st in stations:
-                        if not isinstance(st, dict):
-                            continue
-                        
-                        city_id = str(st.get("cityID", ""))
-                        city_name = str(st.get("cityName", "") or st.get("province", "") or st.get("area", "") or st.get("stationLocation", ""))
-                        
-                        is_thanh_hoa = (
-                            city_id in ["27", "38"] or 
-                            "thanh hó" in city_name.lower() or 
-                            "thanh hoa" in city_name.lower()
-                        )
-                        if not is_thanh_hoa:
-                            continue
-
-                        depth_raw = st.get("sumDepth") or st.get("depth") or st.get("value") or 0
-                        try:
-                            rain = float(depth_raw)
-                        except (ValueError, TypeError):
-                            rain = 0.0
-
-                        time_points = st.get("timePoints", []) or st.get("intervals", []) or []
-                        tp_sum = 0.0
-                        for tp in time_points:
-                            try:
-                                tp_sum += float(tp.get("val") or tp.get("depth") or tp.get("value") or 0)
-                            except (ValueError, TypeError):
-                                pass
-                                
-                        rain = max(rain, tp_sum)
-
-                        if rain >= 51.0:
-                            name = st.get("name") or st.get("stationName") or st.get("area") or "Trạm không tên"
-                            st_key = name.strip().lower()
-                            if st_key not in seen_stations:
-                                seen_stations.add(st_key)
-                                alerts.append({
-                                    "key": f"vrain_{st_key}_{start_str[:10]}",
-                                    "source": "vrain.vn",
-                                    "name": name,
-                                    "location": st.get("stationLocation") or st.get("area") or "Thanh Hóa",
-                                    "rain": round(rain, 1)
-                                })
-        except Exception as e:
-            print(f"❌ Lỗi Vrain Details group {group_id}: {e}")
+        print(f"❌ Lỗi KTTV Details: {e}")
 
     return {
         "has_warning": len(alerts) > 0,
@@ -210,64 +208,73 @@ def fetch_heavy_rain_stations():
         "updated_at": updated_at
     }
 
-def format_rain_alert_msg(data):
-    msg = f"🚨 <b>[CẢNH BÁO MƯA TO THANH HÓA (19:00 ➔ 18:59)]</b>\n"
+def format_kttv_message(data):
+    msg = f"🌧️ <b>[CẢNH BÁO MƯA TRẠM NHÂN DÂN / KTTV THANH HÓA (≥ 30mm)]</b>\n"
     msg += f"🕒 <i>Cập nhật:</i> <code>{data['updated_at']}</code>\n"
     msg += f"📅 <i>Khung giờ tính:</i> <code>{data['time_range']}</code>\n"
-    msg += f"📊 <i>Số trạm đạt mốc cảnh báo:</i> <b>{data['count']} trạm</b>\n"
+    msg += f"📊 <i>Số trạm đạt ngưỡng:</i> <b>{data['count']} trạm</b>\n"
     msg += "───────────────────\n"
 
     for idx, alert in enumerate(data['alerts'], 1):
-        level = "🔴 RẤT TO (≥ 100mm) - BÁO TIẾP" if alert['rain'] >= 100 else "🟠 TO (51 - 100mm)"
         msg += f"📍 <b>{idx}. Trạm: {alert['name']}</b> ({alert['location']})\n"
-        msg += f" 🏢 <i>Nguồn:</i> {alert['source']}\n"
-        msg += f" 🌧️ <i>Mưa tích lũy:</i> <b>{alert['rain']} mm</b> ({level})\n\n"
+        msg += f" 🌧️ <i>Lượng mưa tích lũy:</i> <b>{alert['rain']} mm</b>\n\n"
 
+    msg += "🌐 <i>Nguồn dữ liệu: kttv.vrain.vn</i>"
     return msg
 
-get_vrain_heavy_rain_warning = fetch_heavy_rain_stations
-
-# ==================== LUỒNG QUÉT MƯA TỰ ĐỘNG 5 PHÚT ====================
-def start_5m_rain_scanner():
-    global SENT_RAIN_LEVELS
+# ==================== LUỒNG QUÉT MƯA TỰ ĐỘNG 10 PHÚT ====================
+def start_10m_vrain_scanner():
+    global SENT_VRAIN_LEVELS
     while True:
         try:
-            rain_data = fetch_heavy_rain_stations()
-            if rain_data.get("has_warning"):
-                triggered_alerts = []
-                for a in rain_data['alerts']:
+            vrain_data = fetch_vrain_rain_stations(min_rain=30.0)
+            if vrain_data.get("has_warning"):
+                new_alerts = []
+                for a in vrain_data['alerts']:
                     key = a['key']
                     rain = a['rain']
-                    
-                    # Xác định mức mốc: 100 nếu mưa >= 100, 51 nếu mưa >= 51
-                    target_level = 100 if rain >= 100 else (51 if rain >= 51 else 0)
-                    prev_level = SENT_RAIN_LEVELS.get(key, 0)
-                    
-                    # Nếu chưa báo hoặc trạm tăng mức từ 51 lên vượt 100 thì tiếp tục phát cảnh báo nâng cấp
-                    if target_level > prev_level:
-                        SENT_RAIN_LEVELS[key] = target_level
-                        triggered_alerts.append(a)
+                    prev_rain = SENT_VRAIN_LEVELS.get(key, 0)
+                    if rain >= prev_rain + 10.0 or key not in SENT_VRAIN_LEVELS:
+                        SENT_VRAIN_LEVELS[key] = rain
+                        new_alerts.append(a)
                 
-                if triggered_alerts:
-                    r_copy = dict(rain_data)
-                    r_copy['alerts'] = triggered_alerts
-                    r_copy['count'] = len(triggered_alerts)
-                    
-                    msg_text = format_rain_alert_msg(r_copy)
-                    for chat_id in REGISTERED_CHATS:
-                        requests.post(
-                            f"{TELEGRAM_API_URL}/sendMessage",
-                            json={"chat_id": chat_id, "text": msg_text, "parse_mode": "HTML"},
-                            timeout=10
-                        )
+                if new_alerts:
+                    v_copy = dict(vrain_data)
+                    v_copy['alerts'] = new_alerts
+                    v_copy['count'] = len(new_alerts)
+                    broadcast_alert(format_vrain_message(v_copy))
         except Exception as e:
-            print(f"❌ Lỗi luồng 5m rain scanner: {e}")
-            
-        time.sleep(300)
+            print(f"❌ Lỗi scanner Vrain 10m: {e}")
+        time.sleep(600)
 
-threading.Thread(target=start_5m_rain_scanner, daemon=True).start()
+def start_10m_kttv_scanner():
+    global SENT_KTTV_LEVELS
+    while True:
+        try:
+            kttv_data = fetch_kttv_rain_stations(min_rain=30.0)
+            if kttv_data.get("has_warning"):
+                new_alerts = []
+                for a in kttv_data['alerts']:
+                    key = a['key']
+                    rain = a['rain']
+                    prev_rain = SENT_KTTV_LEVELS.get(key, 0)
+                    if rain >= prev_rain + 10.0 or key not in SENT_KTTV_LEVELS:
+                        SENT_KTTV_LEVELS[key] = rain
+                        new_alerts.append(a)
+                
+                if new_alerts:
+                    k_copy = dict(kttv_data)
+                    k_copy['alerts'] = new_alerts
+                    k_copy['count'] = len(new_alerts)
+                    broadcast_alert(format_kttv_message(k_copy))
+        except Exception as e:
+            print(f"❌ Lỗi scanner KTTV 10m: {e}")
+        time.sleep(600)
 
-# ==================== CÁC HÀM XỬ LÝ NGUỒN KHÁC (TRẠM, IWEATHER, VNDMS, NCHMF) ====================
+threading.Thread(target=start_10m_vrain_scanner, daemon=True).start()
+threading.Thread(target=start_10m_kttv_scanner, daemon=True).start()
+
+# ==================== CÁC HÀM XỬ LÝ NGUỒN (TRẠM, IWEATHER, VNDMS, NCHMF) ====================
 def get_station_status():
     now_vn = datetime.utcnow() + timedelta(hours=7)
     headers = {**HEADERS_DEFAULT, 'Content-Type': 'application/json'}
@@ -392,6 +399,7 @@ def format_vndms_message(data, is_auto=False):
     msg += "🌐 <i>Nguồn: Cục QLĐĐ & PCTT (vndms.gov.vn)</i>"
     return msg
 
+# ==================== LŨ QUÉT & SẠT LỞ NCHMF ====================
 def get_nchmf_landslide_warning():
     now_vn = datetime.utcnow() + timedelta(hours=7)
     now_str = now_vn.strftime("%H:%M:%S %d/%m/%Y")
@@ -404,7 +412,6 @@ def get_nchmf_landslide_warning():
     }
     payload = {"sogiodubao": "6", "date": date_param}
     
-    # Thứ tự ưu tiên nguy cơ để chọn mức cao nhất nếu trùng xã 2 cấp
     SEVERITY_ORDER = {"Rất cao": 3, "Cao": 2, "Trung bình": 1, "Mức rất cao": 3, "Mức cao": 2, "Mức trung bình": 1}
 
     try:
@@ -425,7 +432,6 @@ def get_nchmf_landslide_warning():
             if not items_list:
                 items_list = [v for v in data.values() if isinstance(v, dict)]
 
-        # Dictionary dùng để gom nhóm theo xã 2 cấp (đảm bảo không trùng lặp)
         dict_2cap = {}
 
         for item in items_list:
@@ -439,18 +445,14 @@ def get_nchmf_landslide_warning():
             )
             
             if "thanh" in ten_tinh.lower() and ("hoá" in ten_tinh.lower() or "hóa" in ten_tinh.lower()):
-                # Ưu tiên tuyệt đối commune_name_2cap
                 xa_2cap = (item.get("commune_name_2cap") or item.get("ten_xa_2cap") or item.get("commune_name") or "Chưa rõ").strip()
                 huyen = (item.get("district_name") or item.get("ten_huyen") or "").strip()
                 
-                # ID định danh theo 2 cấp
                 key_2cap = item.get("commune_id_2cap") or f"{huyen}_{xa_2cap}"
                 
-                # Lấy mức nguy cơ
                 lq_raw = item.get("nguycoluquet") or item.get("lu_quet") or "Trung bình"
                 sl_raw = item.get("nguycosatlo") or item.get("sat_lo") or "Trung bình"
                 
-                # Chuẩn hóa chuỗi hiển thị
                 lq_str = lq_raw if str(lq_raw).startswith("Mức") else f"Mức {str(lq_raw).lower()}"
                 sl_str = sl_raw if str(sl_raw).startswith("Mức") else f"Mức {str(sl_raw).lower()}"
 
@@ -465,7 +467,6 @@ def get_nchmf_landslide_warning():
                         "_sl_val": SEVERITY_ORDER.get(sl_raw, 1)
                     }
                 else:
-                    # Nếu xã 2 cấp đã tồn tại, cập nhật mức cảnh báo nếu có điểm nguy cơ cao hơn
                     existing = dict_2cap[key_2cap]
                     if SEVERITY_ORDER.get(lq_raw, 1) > existing["_lq_val"]:
                         existing["lu_quet"] = lq_str
@@ -474,7 +475,6 @@ def get_nchmf_landslide_warning():
                         existing["sat_lo"] = sl_str
                         existing["_sl_val"] = SEVERITY_ORDER.get(sl_raw, 1)
 
-        # Chuyển dict sang list alerts sạch
         alerts = []
         for item in dict_2cap.values():
             alerts.append({
@@ -485,7 +485,6 @@ def get_nchmf_landslide_warning():
                 "sat_lo": item["sat_lo"]
             })
 
-        # count và alerts đều đồng bộ 54 xã
         return {
             "status": "success", 
             "has_warning": len(alerts) > 0, 
@@ -495,6 +494,16 @@ def get_nchmf_landslide_warning():
         }
     except Exception as e:
         return {"status": "error", "message": str(e), "has_warning": False, "count": 0, "alerts": [], "updated_at": now_str}
+
+def get_severity_icon(lu_quet_str, sat_lo_str):
+    combined = f"{lu_quet_str} {sat_lo_str}".lower()
+    if "rất cao" in combined:
+        return "🟣"
+    elif "cao" in combined:
+        return "🔴"
+    else:
+        return "🟠"
+
 def format_nchmf_message(data, is_auto=False):
     if data.get("status") == "error":
         return f"⛰️ <b>[CẢNH BÁO LŨ QUÉT & SẠT LỞ]</b>\n🕒 <i>Cập nhật:</i> {data.get('updated_at')}\n\n❌ <b>LỖI KẾT NỐI:</b> <code>{data.get('message')}</code>"
@@ -503,25 +512,47 @@ def format_nchmf_message(data, is_auto=False):
         return f"⛰️ <b>[CẢNH BÁO LŨ QUÉT & SẠT LỞ - NCHMF]</b>\n🕒 <i>Cập nhật:</i> {data['updated_at']}\n\n✅ <b>AN TOÀN:</b> Không có xã/khu vực nào tại Thanh Hóa nằm trong danh sách cảnh báo."
 
     header = "⚠️ <b>[CẢNH BÁO TỰ ĐỘNG: LŨ QUÉT & SẠT LỞ THANH HÓA]</b>" if is_auto else "⛰️ <b>[CẢNH BÁO LŨ QUÉT & SẠT LỞ - THANH HÓA]</b>"
-    msg = f"{header}\n🕒 <i>Thời gian:</i> <code>{data['updated_at']}</code>\n📍 <i>Tổng số vùng cảnh báo:</i> <b>{data['count']} xã/khu vực</b>\n───────────────────\n"
+    msg = f"{header}\n🕒 <i>Thời gian:</i> <code>{data['updated_at']}</code>\n📍 <i>Tổng số vùng 2 cấp:</i> <b>{data['count']} xã/thị trấn</b>\n───────────────────\n"
+    
     for idx, item in enumerate(data['alerts'], 1):
-        vung = item['xa_2cap']
-        if item['xa_hc'] and item['xa_hc'] != item['xa_2cap']:
-            vung += f" ({item['xa_hc']})"
-        msg += f"📍 <b>{idx}. Địa bàn:</b> {vung}\n 🌀 Lũ quét: <b>{item['lu_quet']}</b>\n ⛰️ Sạt lở đất: <b>{item['sat_lo']}</b>\n\n"
+        icon = get_severity_icon(item['lu_quet'], item['sat_lo'])
+        huyen_str = f" ({item['huyen']})" if item.get('huyen') else ""
+        msg += f"{icon} <b>{idx}. Địa bàn: {item['xa_2cap']}</b>{huyen_str}\n"
+        msg += f"   └ Lũ quét: <i>{item['lu_quet']}</i> | Sạt lở: <i>{item['sat_lo']}</i>\n\n"
         
     msg += "🌐 <i>Nguồn: Cục Khí tượng Thủy văn (luquetsatlo.nchmf.gov.vn)</i>"
     return msg
 
-# ==================== HÀM GỬI THÔNG BÁO ====================
+# ==================== HÀM GỬI THÔNG BÁO (TỰ ĐỘNG TÁCH TIN NHẮN DÀI) ====================
 def send_telegram_message(chat_id, text):
     url = f"{TELEGRAM_API_URL}/sendMessage"
-    try: 
-        res = requests.post(url, json={"chat_id": chat_id, "text": text, "parse_mode": "HTML", "disable_web_page_preview": True}, timeout=10)
-        if res.status_code != 200:
-            print(f"❌ Telegram Error {res.status_code}: {res.text}")
-    except Exception as e: 
-        print(f"❌ Lỗi gửi Telegram: {e}")
+    
+    if len(text) <= MAX_MSG_LEN:
+        try: 
+            res = requests.post(url, json={"chat_id": chat_id, "text": text, "parse_mode": "HTML", "disable_web_page_preview": True}, timeout=10)
+            if res.status_code != 200:
+                print(f"❌ Telegram Error {res.status_code}: {res.text}")
+        except Exception as e: 
+            print(f"❌ Lỗi gửi Telegram: {e}")
+        return
+
+    lines = text.split("\n")
+    chunk = ""
+    for line in lines:
+        if len(chunk) + len(line) + 1 > MAX_MSG_LEN:
+            try:
+                requests.post(url, json={"chat_id": chat_id, "text": chunk, "parse_mode": "HTML", "disable_web_page_preview": True}, timeout=10)
+            except Exception as e:
+                print(f"❌ Lỗi gửi chunk Telegram: {e}")
+            chunk = line + "\n"
+        else:
+            chunk += line + "\n"
+            
+    if chunk:
+        try:
+            requests.post(url, json={"chat_id": chat_id, "text": chunk, "parse_mode": "HTML", "disable_web_page_preview": True}, timeout=10)
+        except Exception as e:
+            print(f"❌ Lỗi gửi chunk cuối Telegram: {e}")
 
 def broadcast_alert(text):
     for chat_id in REGISTERED_CHATS: 
@@ -535,12 +566,20 @@ def process_user_command(chat_id, text_raw):
         st_data = get_station_status()
         send_telegram_message(chat_id, format_station_message(st_data))
 
-    elif cmd in ["/muato", "/mua"]:
-        rain_data = fetch_heavy_rain_stations()
-        if rain_data.get("has_warning"):
-            msg = format_rain_alert_msg(rain_data)
+    elif cmd == "/vrain":
+        vrain_data = fetch_vrain_rain_stations(min_rain=30.0)
+        if vrain_data.get("has_warning"):
+            msg = format_vrain_message(vrain_data)
         else:
-            msg = f"🌧️ <b>[GIÁM SÁT MƯA THANH HÓA]</b>\n📅 <i>Khung tính:</i> <code>{rain_data['time_range']}</code>\n\n✅ <b>AN TOÀN:</b> Chưa có trạm nào vượt ngưỡng 51mm."
+            msg = f"🌧️ <b>[GIÁM SÁT MƯA VRAIN.VN THANH HÓA]</b>\n📅 <i>Khung giờ tính:</i> <code>{vrain_data['time_range']}</code>\n\n✅ <b>AN TOÀN:</b> Chưa có trạm vrain nào đạt ngưỡng 30mm."
+        send_telegram_message(chat_id, msg)
+
+    elif cmd == "/nhandan":
+        kttv_data = fetch_kttv_rain_stations(min_rain=30.0)
+        if kttv_data.get("has_warning"):
+            msg = format_kttv_message(kttv_data)
+        else:
+            msg = f"🌧️ <b>[GIÁM SÁT MƯA TRẠM NHÂN DÂN / KTTV THANH HÓA]</b>\n📅 <i>Khung giờ tính:</i> <code>{kttv_data['time_range']}</code>\n\n✅ <b>AN TOÀN:</b> Chưa có trạm nhân dân/KTTV nào đạt ngưỡng 30mm."
         send_telegram_message(chat_id, msg)
 
     elif cmd == "/dong":
@@ -558,7 +597,8 @@ def process_user_command(chat_id, text_raw):
 
     elif cmd in ["/start", "/tong", "/thoitiet"]:
         st_data = get_station_status()
-        rain_data = fetch_heavy_rain_stations()
+        vrain_data = fetch_vrain_rain_stations(min_rain=30.0)
+        kttv_data = fetch_kttv_rain_stations(min_rain=30.0)
         iweather_data = get_iweather_storm_warning("Thanh Hóa")
         vndms_data = get_vndms_warning()
         landslide_data = get_nchmf_landslide_warning()
@@ -574,18 +614,19 @@ def process_user_command(chat_id, text_raw):
         else:
             msg += f"📡 <b>TRẠM TỰ ĐỘNG:</b> ❌ Lỗi kết nối API\n"
 
-        msg += f"🌧️ <b>LƯỢNG MƯA TO (≥ 51mm):</b> " + (f"⚠️ Có {rain_data['count']} trạm vượt ngưỡng\n" if rain_data.get("has_warning") else "🟢 BÌNH THƯỜNG\n")
+        msg += f"🌧️ <b>MƯA VRAIN (≥ 30mm):</b> " + (f"⚠️ Có {vrain_data['count']} trạm\n" if vrain_data.get("has_warning") else "🟢 Bình thường\n")
+        msg += f"🌧️ <b>MƯA NHÂN DÂN (≥ 30mm):</b> " + (f"⚠️ Có {kttv_data['count']} trạm\n" if kttv_data.get("has_warning") else "🟢 Bình thường\n")
         msg += f"🌩️ <b>DÔNG SÉT (iWeather):</b> " + (f"⚠️ Có {iweather_data['count']} vùng phát triển\n" if iweather_data.get("has_warning") else "🟢 An toàn\n")
         msg += f"🏛️ <b>THIÊN TAI (VNDMS):</b> " + (f"🚨 Có {vndms_data['count']} bản tin khẩn\n" if vndms_data.get("has_warning") else "🟢 Không có cảnh báo\n")
         msg += f"⛰️ <b>LŨ QUÉT & SẠT LỞ:</b> " + (f"⚠️ Có {landslide_data['count']} xã/vùng nguy cơ\n" if landslide_data.get("has_warning") else "🟢 An toàn\n")
 
-        msg += "\n💡 <i>Gõ lệnh riêng để xem chi tiết:</i>\n<code>/tram</code> | <code>/mua</code> | <code>/dong</code> | <code>/thientai</code> | <code>/luquet</code>"
+        msg += "\n💡 <i>Gõ lệnh riêng để xem chi tiết:</i>\n<code>/vrain</code> | <code>/nhandan</code> | <code>/tram</code> | <code>/dong</code> | <code>/thientai</code> | <code>/luquet</code>"
         send_telegram_message(chat_id, msg)
 
-# ==================== ROUTE QUÉT ĐỊNH KỲ (CRON) MỖI 5 PHÚT ====================
+# ==================== ROUTE QUÉT ĐỊNH KỲ (CRON) ====================
 @app.route('/')
 def home():
-    global LAST_IWEATHER_COUNT, SENT_VNDMS_IDS, STATION_PREVIOUS_STATUS, SENT_LANDSLIDE_KEYS, SENT_RAIN_LEVELS
+    global LAST_IWEATHER_COUNT, SENT_VNDMS_IDS, STATION_PREVIOUS_STATUS, SENT_LANDSLIDE_KEYS
     
     # 1. Trạm
     station_data = get_station_status()
@@ -602,27 +643,7 @@ def home():
                     broadcast_alert(f"✅ <b>[THÔNG BÁO TRẠM KẾT NỐI LẠI]</b>\n📡 Trạm: <b>{st_name}</b>\n🟢 Trạng thái: <b>ĐÃ KẾT NỐI LẠI</b>\n🕒 Thời gian: <code>{station_data['updated_at']}</code>")
             STATION_PREVIOUS_STATUS[st_id] = is_online
 
-    # 2. Mưa (Kiểm tra và báo tiếp khi vượt mốc 100mm, cập nhật trạm mới liên tục)
-    rain_data = fetch_heavy_rain_stations()
-    if rain_data.get("has_warning"):
-        triggered_alerts = []
-        for a in rain_data['alerts']:
-            key = a['key']
-            rain = a['rain']
-            target_level = 100 if rain >= 100 else (51 if rain >= 51 else 0)
-            prev_level = SENT_RAIN_LEVELS.get(key, 0)
-            
-            if target_level > prev_level:
-                SENT_RAIN_LEVELS[key] = target_level
-                triggered_alerts.append(a)
-                
-        if triggered_alerts:
-            r_copy = dict(rain_data)
-            r_copy['alerts'] = triggered_alerts
-            r_copy['count'] = len(triggered_alerts)
-            broadcast_alert(format_rain_alert_msg(r_copy))
-
-    # 3. Dông sét
+    # 2. Dông sét
     iweather_data = get_iweather_storm_warning("Thanh Hóa")
     if iweather_data.get("status") == "success":
         current_count = iweather_data.get("count", 0)
@@ -632,7 +653,7 @@ def home():
         elif not iweather_data.get("has_warning"):
             LAST_IWEATHER_COUNT = 0
 
-    # 4. VNDMS
+    # 3. VNDMS
     vndms_data = get_vndms_warning()
     if vndms_data.get("status") == "success" and vndms_data.get("has_warning"):
         new_alerts = [a for a in vndms_data['alerts'] if a['id'] not in SENT_VNDMS_IDS]
@@ -643,7 +664,7 @@ def home():
             v_copy['count'] = len(new_alerts)
             broadcast_alert(format_vndms_message(v_copy, is_auto=True))
 
-    # 5. Sạt lở
+    # 4. Sạt lở
     landslide_data = get_nchmf_landslide_warning()
     if landslide_data.get("status") == "success" and landslide_data.get("has_warning"):
         new_landslide_alerts = [a for a in landslide_data['alerts'] if a['key'] not in SENT_LANDSLIDE_KEYS]
