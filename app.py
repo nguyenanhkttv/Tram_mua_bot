@@ -448,17 +448,20 @@ def get_nchmf_landslide_warning():
             lu_quet_str = lu_quet if "Mức" in str(lu_quet) else f"Mức {str(lu_quet).lower()}"
             sat_lo_str = sat_lo if "Mức" in str(sat_lo) else f"Mức {str(sat_lo).lower()}"
             
-            xa_id = item.get("commune_id_2cap") or item.get("id") or xa_2cap
-            alert_key = f"{xa_id}_{xa_2cap}_{lu_quet_str}_{sat_lo_str}"
-            
-            if alert_key not in [a['key'] for a in alerts]:
-                alerts.append({
-                    "key": alert_key,
-                    "xa_2cap": xa_2cap,
-                    "xa_hc": "",
-                    "lu_quet": lu_quet_str,
-                    "sat_lo": sat_lo_str
-                })
+            # Lấy giá trị xa_2cap đúng từ item
+        xa_2cap_val = item.get("commune_id_2cap") or item.get("id") or item.get("xa_2cap", "")
+        xa_id = xa_2cap_val
+        alert_key = f"{xa_id}_{xa_2cap_val}_{lu_quet_str}_{sat_lo_str}"
+
+        # Kiểm tra trùng lặp bằng set comprehension hoặc any()
+        if not any(a.get('key') == alert_key for a in alerts):
+            alerts.append({
+                "key": alert_key,
+                "xa_2cap": xa_2cap_val,
+                "xa_hc": item.get("xa_hc", ""),
+                "lu_quet": lu_quet_str,
+                "sat_lo": sat_lo_str
+            })
 
         return {"status": "success", "has_warning": len(alerts) > 0, "count": len(alerts), "alerts": alerts, "updated_at": now_str}
     except Exception as e:
