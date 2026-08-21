@@ -424,26 +424,38 @@ def get_nchmf_landslide_warning():
                 items_list = [v for v in data.values() if isinstance(v, dict)]
 
         for item in items_list:
-            if not isinstance(item, dict):
-                continue
-            
-            ten_tinh = str(item.get("ten_tinh", "") or item.get("Tinh", "") or item.get("provinceName", ""))
-            
-            if "thanh" in ten_tinh.lower() and ("hoá" in ten_tinh.lower() or "hóa" in ten_tinh.lower()):
-                xa_2cap = item.get("xaname_2cap") or item.get("ten_xa") or item.get("communeName") or "Chưa rõ"
-                xa_hc = item.get("ten_xa", "")
-                lu_quet = item.get("lu_quet") or item.get("CapCB_LQ") or item.get("warningLevelLQ") or "Mức trung bình"
-                sat_lo = item.get("sat_lo") or item.get("CapCB_SL") or item.get("warningLevelSL") or "Mức trung bình"
-                
-                alert_key = f"{item.get('xaid_2cap', xa_2cap)}_{lu_quet}_{sat_lo}"
-                if not any(a['key'] == alert_key for a in alerts):
-                    alerts.append({
-                        "key": alert_key,
-                        "xa_2cap": xa_2cap,
-                        "xa_hc": xa_hc,
-                        "lu_quet": lu_quet,
-                        "sat_lo": sat_lo
-                    })
+    if not isinstance(item, dict):
+        continue
+    
+    ten_tinh = str(item.get("ten_tinh") or item.get("Tinh") or item.get("provinceName") or "")
+    
+    if "thanh" in ten_tinh.lower() and ("hoá" in ten_tinh.lower() or "hóa" in ten_tinh.lower()):
+        # Lấy tên địa bàn/xã linh hoạt theo đúng key trả về của NCHMF
+        xa_2cap = (
+            item.get("ten_xa_2cap") or 
+            item.get("xaname_2cap") or 
+            item.get("ten_xa") or 
+            item.get("communeName") or 
+            item.get("ten_huyen") or 
+            "Chưa rõ"
+        )
+        xa_hc = item.get("ten_xa", "")
+        
+        lu_quet = item.get("lu_quet") or item.get("CapCB_LQ") or item.get("warningLevelLQ") or "Mức trung bình"
+        sat_lo = item.get("sat_lo") or item.get("CapCB_SL") or item.get("warningLevelSL") or "Mức trung bình"
+        
+        # Dùng ID thực tế của xã/huyện hoặc kết hợp tên xã + index để làm unique key
+        xa_id = item.get("xaid_2cap") or item.get("ma_xa") or item.get("id") or xa_2cap
+        alert_key = f"{xa_id}_{xa_2cap}_{lu_quet}_{sat_lo}"
+        
+        if not any(a['key'] == alert_key for a in alerts):
+            alerts.append({
+                "key": alert_key,
+                "xa_2cap": xa_2cap,
+                "xa_hc": xa_hc,
+                "lu_quet": lu_quet,
+                "sat_lo": sat_lo
+            })
 
         return {"status": "success", "has_warning": len(alerts) > 0, "count": len(alerts), "alerts": alerts, "updated_at": now_str}
     except Exception as e:
