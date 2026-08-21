@@ -456,13 +456,13 @@ def get_nchmf_landslide_warning():
             xa_id = item.get("commune_id_2cap") or item.get("id") or xa_2cap
             alert_key = f"{xa_id}_{xa_2cap}_{lu_quet_str}_{sat_lo_str}"
             
-            if not any(a['key'] == alert_key for a in alerts):
-                alerts.append({
-                    "key": alert_key,
-                    "xa_2cap": xa_2cap,
-                    "xa_hc": "",
-                    "lu_quet": lu_quet_str,
-                    "sat_lo": sat_lo_str
+        if not any(a['key'] == alert_key for a in alerts):
+            alerts.append({
+                "key": alert_key,
+                "xa_2cap": xa_2cap,
+                "xa_hc": "",
+                "lu_quet": lu_quet_str,
+                "sat_lo": sat_lo_str
                 })
 
     return {"status": "success", "has_warning": len(alerts) > 0, "count": len(alerts), "alerts": alerts, "updated_at": now_str}
