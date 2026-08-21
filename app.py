@@ -464,7 +464,7 @@ def get_nchmf_landslide_warning():
             })
 
         return {"status": "success", "has_warning": len(alerts) > 0, "count": len(alerts), "alerts": alerts, "updated_at": now_str}
-    except Exception as e:
+            except Exception as e:
         return {"status": "error", "message": str(e), "has_warning": False, "count": 0, "alerts": [], "updated_at": now_str}
 
 def format_nchmf_message(data, is_auto=False):
