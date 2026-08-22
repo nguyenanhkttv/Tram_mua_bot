@@ -436,91 +436,103 @@ def get_nchmf_landslide_warning():
     now_vn = datetime.utcnow() + timedelta(hours=7)
     now_str = now_vn.strftime("%H:%M:%S %d/%m/%Y")
     
+    # BẮT BUỘC dùng mốc 00:00:00 NCHMF mới trả về dữ liệu
+    date_param = now_vn.strftime("%Y-%m-%d 00:00:00")
+    
     headers = {
         'Content-Type': 'application/x-www-form-urlencoded; charset=UTF-8',
         'User-Agent': HEADERS_DEFAULT['User-Agent'],
-        'X-Requested-With': 'XMLHttpRequest',
-        'Cache-Control': 'no-cache, no-store'
+        'X-Requested-With': 'XMLHttpRequest'
+    }
+    
+    payload = {
+        "sogiodubao": "6", 
+        "date": date_param
     }
     
     SEVERITY_ORDER = {"Rất cao": 3, "Cao": 2, "Trung bình": 1, "Mức rất cao": 3, "Mức cao": 2, "Mức trung bình": 1}
-    
-    # Chỉ gửi request lấy bản tin dự báo real-time mới nhất
-    url_realtime = f"{NCHMF_CANHBAO_URL}?_t={int(time.time())}"
-    payload = {
-        "sogiodubao": "6", 
-        "date": now_vn.strftime("%Y-%m-%d %H:%M:%S")
-    }
-    
-    items_list = []
+
     try:
+        url_realtime = f"{NCHMF_CANHBAO_URL}?_t={int(time.time())}"
         res = requests.post(url_realtime, data=payload, headers=headers, verify=False, timeout=12)
-        if res.status_code == 200:
-            data = res.json()
-            if isinstance(data, list):
-                items_list = data
-            elif isinstance(data, dict):
-                for k in ["data", "result", "results", "list", "content", "ds"]:
-                    if isinstance(data.get(k), list):
-                        items_list = data.get(k)
-                        break
-                if not items_list:
-                    items_list = [v for v in data.values() if isinstance(v, dict)]
+        
+        if res.status_code != 200:
+            return {"status": "error", "message": f"HTTP {res.status_code}", "has_warning": False, "count": 0, "alerts": [], "updated_at": now_str}
+            
+        data = res.json()
+        
+        items_list = []
+        if isinstance(data, list):
+            items_list = data
+        elif isinstance(data, dict):
+            for k in ["data", "result", "results", "list", "content", "ds"]:
+                if isinstance(data.get(k), list):
+                    items_list = data.get(k)
+                    break
+            if not items_list:
+                items_list = [v for v in data.values() if isinstance(v, dict)]
+
+        dict_2cap = {}
+
+        for item in items_list:
+            if not isinstance(item, dict):
+                continue
+            
+            # Kiểm tra ID tỉnh Thanh Hóa (thường là 27 hoặc 38) hoặc lọc theo tên
+            ten_tinh = str(
+                item.get("provinceName") or 
+                item.get("provinceName_2cap") or 
+                item.get("ten_tinh") or ""
+            )
+            city_id = str(item.get("provinceId") or item.get("cityID") or "")
+            
+            is_thanh_hoa = (city_id in ["27", "38"] or ("thanh" in ten_tinh.lower() and ("hoá" in ten_tinh.lower() or "hóa" in ten_tinh.lower())))
+            
+            if is_thanh_hoa:
+                xa_2cap = (item.get("commune_name_2cap") or item.get("ten_xa_2cap") or item.get("commune_name") or "Chưa rõ").strip()
+                huyen = (item.get("district_name") or item.get("ten_huyen") or "").strip()
+                
+                # Tạo Unique Key chuẩn cho từng xã để gom nhóm không bị trùng
+                key_2cap = str(item.get("commune_id_2cap") or item.get("commune_id") or f"{huyen}_{xa_2cap}").strip()
+                
+                lq_raw = item.get("nguycoluquet") or item.get("lu_quet") or "Trung bình"
+                sl_raw = item.get("nguycosatlo") or item.get("sat_lo") or "Trung bình"
+                
+                lq_str = str(lq_raw) if str(lq_raw).startswith("Mức") else f"Mức {str(lq_raw).lower()}"
+                sl_str = str(sl_raw) if str(sl_raw).startswith("Mức") else f"Mức {str(sl_raw).lower()}"
+
+                if key_2cap not in dict_2cap:
+                    dict_2cap[key_2cap] = {
+                        "key": key_2cap,
+                        "huyen": huyen,
+                        "xa_2cap": xa_2cap,
+                        "lu_quet": lq_str,
+                        "sat_lo": sl_str,
+                        "_lq_val": SEVERITY_ORDER.get(lq_raw, 1),
+                        "_sl_val": SEVERITY_ORDER.get(sl_raw, 1)
+                    }
+                else:
+                    # Nếu trùng xã thì cập nhật mức nguy cơ cao nhất
+                    existing = dict_2cap[key_2cap]
+                    if SEVERITY_ORDER.get(lq_raw, 1) > existing["_lq_val"]:
+                        existing["lu_quet"] = lq_str
+                        existing["_lq_val"] = SEVERITY_ORDER.get(lq_raw, 1)
+                    if SEVERITY_ORDER.get(sl_raw, 1) > existing["_sl_val"]:
+                        existing["sat_lo"] = sl_str
+                        existing["_sl_val"] = SEVERITY_ORDER.get(sl_raw, 1)
+
+        alerts = list(dict_2cap.values())
+        return {
+            "status": "success", 
+            "has_warning": len(alerts) > 0, 
+            "count": len(alerts), 
+            "alerts": alerts, 
+            "updated_at": now_str
+        }
+
     except Exception as e:
-        print(f"❌ Lỗi truy vấn NCHMF: {e}")
+        print(f"❌ Lỗi NCHMF: {e}")
         return {"status": "error", "message": str(e), "has_warning": False, "count": 0, "alerts": [], "updated_at": now_str}
-
-    dict_2cap = {}
-
-    for item in items_list:
-        if not isinstance(item, dict):
-            continue
-        
-        ten_tinh = str(
-            item.get("provinceName") or 
-            item.get("provinceName_2cap") or 
-            item.get("ten_tinh") or ""
-        )
-        
-        if "thanh" in ten_tinh.lower() and ("hoá" in ten_tinh.lower() or "hóa" in ten_tinh.lower()):
-            xa_2cap = (item.get("commune_name_2cap") or item.get("ten_xa_2cap") or item.get("commune_name") or "Chưa rõ").strip()
-            huyen = (item.get("district_name") or item.get("ten_huyen") or "").strip()
-            
-            key_2cap = item.get("commune_id_2cap") or f"{huyen}_{xa_2cap}"
-            
-            lq_raw = item.get("nguycoluquet") or item.get("lu_quet") or "Trung bình"
-            sl_raw = item.get("nguycosatlo") or item.get("sat_lo") or "Trung bình"
-            
-            lq_str = str(lq_raw) if str(lq_raw).startswith("Mức") else f"Mức {str(lq_raw).lower()}"
-            sl_str = str(sl_raw) if str(sl_raw).startswith("Mức") else f"Mức {str(sl_raw).lower()}"
-
-            if key_2cap not in dict_2cap:
-                dict_2cap[key_2cap] = {
-                    "key": str(key_2cap),
-                    "huyen": huyen,
-                    "xa_2cap": xa_2cap,
-                    "lu_quet": lq_str,
-                    "sat_lo": sl_str,
-                    "_lq_val": SEVERITY_ORDER.get(lq_raw, 1),
-                    "_sl_val": SEVERITY_ORDER.get(sl_raw, 1)
-                }
-            else:
-                existing = dict_2cap[key_2cap]
-                if SEVERITY_ORDER.get(lq_raw, 1) > existing["_lq_val"]:
-                    existing["lu_quet"] = lq_str
-                    existing["_lq_val"] = SEVERITY_ORDER.get(lq_raw, 1)
-                if SEVERITY_ORDER.get(sl_raw, 1) > existing["_sl_val"]:
-                    existing["sat_lo"] = sl_str
-                    existing["_sl_val"] = SEVERITY_ORDER.get(sl_raw, 1)
-
-    alerts = list(dict_2cap.values())
-    return {
-        "status": "success", 
-        "has_warning": len(alerts) > 0, 
-        "count": len(alerts), 
-        "alerts": alerts, 
-        "updated_at": now_str
-    }
 def get_severity_icon(lu_quet_str, sat_lo_str):
     combined = f"{lu_quet_str} {sat_lo_str}".lower()
     if "rất cao" in combined:
