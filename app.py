@@ -436,8 +436,8 @@ def get_nchmf_landslide_warning():
     now_vn = datetime.utcnow() + timedelta(hours=7)
     now_str = now_vn.strftime("%H:%M:%S %d/%m/%Y")
     
-    # BẮT BUỘC dùng mốc 00:00:00 NCHMF mới trả về dữ liệu
-    date_param = now_vn.strftime("%Y-%m-%d 00:00:00")
+    # Mốc thời gian chuẩn NCHMF yêu cầu
+    date_param = now_vn.strftime("%Y-%m-%d %H:00:00")
     
     headers = {
         'Content-Type': 'application/x-www-form-urlencoded; charset=UTF-8',
@@ -478,21 +478,17 @@ def get_nchmf_landslide_warning():
             if not isinstance(item, dict):
                 continue
             
-            # Kiểm tra ID tỉnh Thanh Hóa (thường là 27 hoặc 38) hoặc lọc theo tên
-            ten_tinh = str(
-                item.get("provinceName") or 
-                item.get("provinceName_2cap") or 
-                item.get("ten_tinh") or ""
-            )
-            city_id = str(item.get("provinceId") or item.get("cityID") or "")
+            # Lọc chính xác Mã Tỉnh Thanh Hóa (= 33) theo API NCHMF
+            prov_ref = str(item.get("province_ref") or item.get("provinceId") or item.get("cityID") or "")
+            ten_tinh = str(item.get("provinceName_2cap") or item.get("provinceName") or item.get("ten_tinh") or "")
             
-            is_thanh_hoa = (city_id in ["27", "38"] or ("thanh" in ten_tinh.lower() and ("hoá" in ten_tinh.lower() or "hóa" in ten_tinh.lower())))
+            is_thanh_hoa = (prov_ref == "33" or ("thanh" in ten_tinh.lower() and ("hoá" in ten_tinh.lower() or "hóa" in ten_tinh.lower())))
             
             if is_thanh_hoa:
-                xa_2cap = (item.get("commune_name_2cap") or item.get("ten_xa_2cap") or item.get("commune_name") or "Chưa rõ").strip()
-                huyen = (item.get("district_name") or item.get("ten_huyen") or "").strip()
+                xa_2cap = str(item.get("commune_name_2cap") or item.get("ten_xa_2cap") or item.get("commune_name") or "Chưa rõ").strip()
+                huyen = str(item.get("district_name") or item.get("ten_huyen") or "").strip()
                 
-                # Tạo Unique Key chuẩn cho từng xã để gom nhóm không bị trùng
+                # Bắt ID xã chuẩn (commune_id_2cap) để làm key duy nhất
                 key_2cap = str(item.get("commune_id_2cap") or item.get("commune_id") or f"{huyen}_{xa_2cap}").strip()
                 
                 lq_raw = item.get("nguycoluquet") or item.get("lu_quet") or "Trung bình"
@@ -512,7 +508,6 @@ def get_nchmf_landslide_warning():
                         "_sl_val": SEVERITY_ORDER.get(sl_raw, 1)
                     }
                 else:
-                    # Nếu trùng xã thì cập nhật mức nguy cơ cao nhất
                     existing = dict_2cap[key_2cap]
                     if SEVERITY_ORDER.get(lq_raw, 1) > existing["_lq_val"]:
                         existing["lu_quet"] = lq_str
