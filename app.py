@@ -124,7 +124,7 @@ def fetch_vrain_rain_stations(min_rain=30.0):
             res = requests.get(VRAIN_SUMMARY_URL, params=params, headers=HEADERS_DEFAULT, timeout=12)
             if res.status_code == 200:
                 data = res.json()
-                stats = data if isinstance(data, list) else data.get("stats", data.get("data", []))
+                stats = data if isinstance(data, list) else (data.get("stats") or data.get("data") or [])
                 
                 for st in stats:
                     if not isinstance(st, dict):
@@ -138,7 +138,7 @@ def fetch_vrain_rain_stations(min_rain=30.0):
                         continue
 
                     try:
-                        rain = float(st.get("sumDepth") or st_obj.get("sumDepth") or st.get("depth") or 0)
+                        rain = float(st.get("sumDepth") if st.get("sumDepth") is not None else (st_obj.get("sumDepth") or st.get("depth") or 0))
                     except (ValueError, TypeError):
                         rain = 0.0
 
@@ -197,7 +197,7 @@ def fetch_kttv_rain_stations(min_rain=30.0):
         res = requests.get(KTTV_SUMMARY_URL, params=params, headers=HEADERS_DEFAULT, timeout=15)
         if res.status_code == 200:
             data = res.json()
-            stats = data if isinstance(data, list) else data.get("stats", data.get("data", []))
+            stats = data if isinstance(data, list) else (data.get("stats") or data.get("data") or [])
             
             for st in stats:
                 if not isinstance(st, dict):
@@ -213,7 +213,7 @@ def fetch_kttv_rain_stations(min_rain=30.0):
                 st_key = st_name.strip().lower()
 
                 try:
-                    rain_total = float(st.get("sumDepth") or st.get("depth") or st.get("value") or 0)
+                    rain_total = float(st.get("sumDepth") if st.get("sumDepth") is not None else (st.get("depth") or st.get("value") or 0))
                 except (ValueError, TypeError):
                     rain_total = 0.0
 
@@ -431,7 +431,7 @@ def format_vndms_message(data, is_auto=False):
     msg += "🌐 <i>Nguồn: Cục QLĐĐ & PCTT (vndms.gov.vn)</i>"
     return msg
 
-# ==================== LŨ QUÉT & SẠT LỞ NCHMF (ĐÃ TỐI ƯU HOÀN THIỆN) ====================
+# ==================== LŨ QUÉT & SẠT LỞ NCHMF (ĐÃ SỬA TRIỆT ĐỂ LỖI KHÔNG HIỂN THỊ) ====================
 def get_nchmf_landslide_warning():
     now_vn = datetime.utcnow() + timedelta(hours=7)
     now_str = now_vn.strftime("%H:%M:%S %d/%m/%Y")
@@ -444,24 +444,25 @@ def get_nchmf_landslide_warning():
     
     SEVERITY_ORDER = {"Rất cao": 3, "Cao": 2, "Trung bình": 1, "Mức rất cao": 3, "Mức cao": 2, "Mức trung bình": 1}
     
-    # Thử gọi API với 2 kiểu định dạng date phổ biến của NCHMF để tránh bị trả vĩnh viễn mảng rỗng
-    date_formats = [
-        now_vn.strftime("%Y-%m-%d %H:%M:%S"),
-        now_vn.strftime("%d/%m/%Y %H:%M:%S")
+    # 3 Kiểu Payload gọi thử NCHMF
+    payload_configs = [
+        {"sogiodubao": "6", "date": now_vn.strftime("%Y-%m-%d %H:%M:%S")},
+        {"sogiodubao": "6", "date": now_vn.strftime("%Y-%m-%d 00:00:00")},
+        {"sogiodubao": "6"}
     ]
     
     data = None
-    for date_p in date_formats:
+    for payload in payload_configs:
         try:
             url_realtime = f"{NCHMF_CANHBAO_URL}?_t={int(time.time())}"
-            payload = {"sogiodubao": "6", "date": date_p}
             res = requests.post(url_realtime, data=payload, headers=headers, verify=False, timeout=12)
             if res.status_code == 200:
                 res_json = res.json()
                 if res_json:
                     data = res_json
                     break
-        except Exception:
+        except Exception as e:
+            print(f"❌ Lỗi try fetch NCHMF: {e}")
             continue
 
     if not data:
@@ -499,8 +500,8 @@ def get_nchmf_landslide_warning():
             lq_raw = item.get("nguycoluquet") or item.get("lu_quet") or "Trung bình"
             sl_raw = item.get("nguycosatlo") or item.get("sat_lo") or "Trung bình"
             
-            lq_str = lq_raw if str(lq_raw).startswith("Mức") else f"Mức {str(lq_raw).lower()}"
-            sl_str = sl_raw if str(sl_raw).startswith("Mức") else f"Mức {str(sl_raw).lower()}"
+            lq_str = str(lq_raw) if str(lq_raw).startswith("Mức") else f"Mức {str(lq_raw).lower()}"
+            sl_str = str(sl_raw) if str(sl_raw).startswith("Mức") else f"Mức {str(sl_raw).lower()}"
 
             if key_2cap not in dict_2cap:
                 dict_2cap[key_2cap] = {
@@ -697,15 +698,19 @@ def home():
             v_copy['count'] = len(new_alerts)
             broadcast_alert(format_vndms_message(v_copy, is_auto=True))
 
-    # 4. Sạt lở
+    # 4. Sạt lở (Cập nhật danh sách mới và thông báo xã mới xuất hiện)
     landslide_data = get_nchmf_landslide_warning()
     if landslide_data.get("status") == "success" and landslide_data.get("has_warning"):
-        new_landslide_alerts = [a for a in landslide_data['alerts'] if a['key'] not in SENT_LANDSLIDE_KEYS]
-        if new_landslide_alerts:
-            for a in new_landslide_alerts: SENT_LANDSLIDE_KEYS.add(a['key'])
+        current_keys = {a['key'] for a in landslide_data['alerts']}
+        new_keys = current_keys - SENT_LANDSLIDE_KEYS
+        
+        if new_keys:
+            new_alerts = [a for a in landslide_data['alerts'] if a['key'] in new_keys]
+            SENT_LANDSLIDE_KEYS.update(new_keys)
+            
             l_copy = dict(landslide_data)
-            l_copy['alerts'] = new_landslide_alerts
-            l_copy['count'] = len(new_landslide_alerts)
+            l_copy['alerts'] = new_alerts
+            l_copy['count'] = len(new_alerts)
             broadcast_alert(format_nchmf_message(l_copy, is_auto=True))
 
     return jsonify({"status": "running", "registered_chats": list(REGISTERED_CHATS)}), 200
