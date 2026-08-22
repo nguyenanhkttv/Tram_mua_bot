@@ -439,45 +439,36 @@ def get_nchmf_landslide_warning():
     headers = {
         'Content-Type': 'application/x-www-form-urlencoded; charset=UTF-8',
         'User-Agent': HEADERS_DEFAULT['User-Agent'],
-        'X-Requested-With': 'XMLHttpRequest'
+        'X-Requested-With': 'XMLHttpRequest',
+        'Cache-Control': 'no-cache, no-store'
     }
     
     SEVERITY_ORDER = {"Rất cao": 3, "Cao": 2, "Trung bình": 1, "Mức rất cao": 3, "Mức cao": 2, "Mức trung bình": 1}
     
-    # 3 Kiểu Payload gọi thử NCHMF
-    payload_configs = [
-        {"sogiodubao": "6", "date": now_vn.strftime("%Y-%m-%d %H:%M:%S")},
-        {"sogiodubao": "6", "date": now_vn.strftime("%Y-%m-%d 00:00:00")},
-        {"sogiodubao": "6"}
-    ]
+    # Chỉ gửi request lấy bản tin dự báo real-time mới nhất
+    url_realtime = f"{NCHMF_CANHBAO_URL}?_t={int(time.time())}"
+    payload = {
+        "sogiodubao": "6", 
+        "date": now_vn.strftime("%Y-%m-%d %H:%M:%S")
+    }
     
-    data = None
-    for payload in payload_configs:
-        try:
-            url_realtime = f"{NCHMF_CANHBAO_URL}?_t={int(time.time())}"
-            res = requests.post(url_realtime, data=payload, headers=headers, verify=False, timeout=12)
-            if res.status_code == 200:
-                res_json = res.json()
-                if res_json:
-                    data = res_json
-                    break
-        except Exception as e:
-            print(f"❌ Lỗi try fetch NCHMF: {e}")
-            continue
-
-    if not data:
-        return {"status": "success", "has_warning": False, "count": 0, "alerts": [], "updated_at": now_str}
-
     items_list = []
-    if isinstance(data, list):
-        items_list = data
-    elif isinstance(data, dict):
-        for k in ["data", "result", "results", "list", "content", "ds"]:
-            if isinstance(data.get(k), list):
-                items_list = data.get(k)
-                break
-        if not items_list:
-            items_list = [v for v in data.values() if isinstance(v, dict)]
+    try:
+        res = requests.post(url_realtime, data=payload, headers=headers, verify=False, timeout=12)
+        if res.status_code == 200:
+            data = res.json()
+            if isinstance(data, list):
+                items_list = data
+            elif isinstance(data, dict):
+                for k in ["data", "result", "results", "list", "content", "ds"]:
+                    if isinstance(data.get(k), list):
+                        items_list = data.get(k)
+                        break
+                if not items_list:
+                    items_list = [v for v in data.values() if isinstance(v, dict)]
+    except Exception as e:
+        print(f"❌ Lỗi truy vấn NCHMF: {e}")
+        return {"status": "error", "message": str(e), "has_warning": False, "count": 0, "alerts": [], "updated_at": now_str}
 
     dict_2cap = {}
 
@@ -530,7 +521,6 @@ def get_nchmf_landslide_warning():
         "alerts": alerts, 
         "updated_at": now_str
     }
-
 def get_severity_icon(lu_quet_str, sat_lo_str):
     combined = f"{lu_quet_str} {sat_lo_str}".lower()
     if "rất cao" in combined:
