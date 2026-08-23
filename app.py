@@ -28,10 +28,9 @@ HEADERS_DEFAULT = {
 }
 
 MAX_MSG_LEN = 3800
-
 app = Flask(__name__)
 
-# ==================== LƯU TRỮ CHAT ID VÀ TRẠNG THÁI GỬI ====================
+# ==================== QUẢN LÝ TẬP FILE CHAT ====================
 CHAT_FILE = "chats.json"
 
 def load_chats():
@@ -39,8 +38,8 @@ def load_chats():
         try:
             with open(CHAT_FILE, "r") as f:
                 return set(json.load(f))
-        except Exception as e:
-            print(f"❌ Lỗi đọc chat ID: {e}")
+        except Exception:
+            pass
     return set()
 
 def save_chats():
@@ -56,10 +55,11 @@ SENT_VNDMS_IDS = set()
 SENT_LANDSLIDE_KEYS = set()
 STATION_PREVIOUS_STATUS = {}
 
+# Vết phân cấp cảnh báo riêng cho 2 nguồn độc lập
 SENT_VRAIN_STAGES = {}
 SENT_KTTV_STAGES = {}
 
-# ==================== HÀM GỬI THÔNG BÁO ====================
+# ==================== GỬI TIN TELEGRAM ====================
 def send_telegram_message(chat_id, text):
     url = f"{TELEGRAM_API_URL}/sendMessage"
     if len(text) <= MAX_MSG_LEN:
@@ -88,7 +88,6 @@ def send_telegram_message(chat_id, text):
             print(f"❌ Lỗi gửi chunk cuối Telegram: {e}")
 
 def broadcast_alert(text):
-    # Đọc trực tiếp danh sách mới nhất để tránh sót Chat ID khi app khởi động lại
     chats = load_chats().union(REGISTERED_CHATS)
     for chat_id in chats: 
         send_telegram_message(chat_id, text)
@@ -130,7 +129,7 @@ def check_rain_alert_level(st_key, rain, stage_dict):
 
     return should_alert, alert_tag
 
-# ==================== LOGIC MƯA VRAIN.VN ====================
+# ==================== NGUỒN 1: VRAIN.VN ====================
 def fetch_vrain_rain_stations(min_rain=30.0):
     now_vn = datetime.utcnow() + timedelta(hours=7)
     updated_at = now_vn.strftime("%H:%M:%S %d/%m/%Y")
@@ -144,7 +143,7 @@ def fetch_vrain_rain_stations(min_rain=30.0):
 
     for group_id in [None, 33]:
         try:
-            params = {"from": from_str, "to": to_str, "_t": int(time.time())}
+            params = {"from": from_str, "to": to_str, "_t": int(time.time() * 1000)}
             if group_id:
                 params["groupID"] = group_id
 
@@ -159,13 +158,14 @@ def fetch_vrain_rain_stations(min_rain=30.0):
                     
                     st_obj = st.get("station", st) if isinstance(st.get("station"), dict) else st
                     city_id = str(st_obj.get("cityID", ""))
-                    city_name = str(st_obj.get("cityName", "") or st_obj.get("province", "") or st_obj.get("area", "") or st_obj.get("location", ""))
+                    city_name = str(st_obj.get("cityName", "") or st_obj.get("province", "") or "").lower()
                     
-                    if not (city_id in ["27", "38"] or "thanh hó" in city_name.lower() or "thanh hoa" in city_name.lower()):
+                    if not (city_id in ["27", "38"] or "thanh h" in city_name):
                         continue
 
                     try:
-                        rain = float(st.get("sumDepth") if st.get("sumDepth") is not None else (st_obj.get("sumDepth") or st.get("depth") or 0))
+                        rain_raw = st.get("sumDepth") if st.get("sumDepth") is not None else st_obj.get("sumDepth")
+                        rain = float(rain_raw if rain_raw is not None else (st.get("depth") or 0))
                     except (ValueError, TypeError):
                         rain = 0.0
 
@@ -208,7 +208,7 @@ def format_vrain_message(data):
     msg += "🌐 <i>Nguồn dữ liệu: vrain.vn</i>"
     return msg
 
-# ==================== LOGIC MƯA KTTV.VRAIN.VN ====================
+# ==================== NGUỒN 2: KTTV.VRAIN.VN (TRẠM NHÂN DÂN / KTTV) ====================
 def fetch_kttv_rain_stations(min_rain=30.0):
     now_vn = datetime.utcnow() + timedelta(hours=7)
     updated_at = now_vn.strftime("%H:%M:%S %d/%m/%Y")
@@ -220,7 +220,12 @@ def fetch_kttv_rain_stations(min_rain=30.0):
     seen_stations = set()
 
     try:
-        params = {"groupID": 14, "from": from_str, "to": to_str, "_t": int(time.time())}
+        params = {
+            "groupID": 14, 
+            "from": from_str, 
+            "to": to_str, 
+            "_t": int(time.time() * 1000)
+        }
         res = requests.get(KTTV_SUMMARY_URL, params=params, headers=HEADERS_DEFAULT, timeout=15)
         if res.status_code == 200:
             data = res.json()
@@ -231,16 +236,20 @@ def fetch_kttv_rain_stations(min_rain=30.0):
                     continue
                 
                 city_id = str(st.get("cityID", ""))
-                city_name = str(st.get("cityName", "") or st.get("province", "") or st.get("stationLocation", ""))
+                city_name = str(st.get("cityName", "") or st.get("province", "") or "").lower()
                 
-                if not (city_id in ["27", "38"] or "thanh hó" in city_name.lower() or "thanh hoa" in city_name.lower()):
+                # Khớp chuẩn theo response trên DevTools: cityID = 27 (Thanh Hóa)
+                if not (city_id == "27" or "thanh h" in city_name):
                     continue
                     
-                st_name = st.get("stationName") or st.get("name") or st.get("area") or "Trạm không tên"
+                st_name = st.get("stationName") or st.get("name") or "Trạm không tên"
                 st_key = st_name.strip().lower()
 
                 try:
-                    rain_total = float(st.get("sumDepth") if st.get("sumDepth") is not None else (st.get("depth") or st.get("value") or 0))
+                    rain_raw = st.get("sumDepth")
+                    if rain_raw is None:
+                        rain_raw = st.get("depth", 0)
+                    rain_total = float(rain_raw)
                 except (ValueError, TypeError):
                     rain_total = 0.0
 
@@ -249,7 +258,7 @@ def fetch_kttv_rain_stations(min_rain=30.0):
                     alerts.append({
                         "key": st_key,
                         "name": st_name,
-                        "location": st.get("stationLocation") or "Thanh Hóa",
+                        "location": st.get("stationLocation") or st.get("area") or "Thanh Hóa",
                         "rain": round(rain_total, 1)
                     })
     except Exception as e:
@@ -279,10 +288,11 @@ def format_kttv_message(data):
     msg += "🌐 <i>Nguồn dữ liệu: kttv.vrain.vn</i>"
     return msg
 
-# ==================== LUỒNG THI CÔNG TRỰC TIẾP TRONG ROUTE ====================
+# ==================== TIẾN TRÌNH QUÉT MƯA ĐỘC LẬP ====================
 def run_rain_check_logic():
     global SENT_VRAIN_STAGES, SENT_KTTV_STAGES
-    # 1. Quét Vrain
+    
+    # 1. Quét riêng Vrain.vn
     try:
         vrain_data = fetch_vrain_rain_stations(min_rain=30.0)
         if vrain_data.get("has_warning"):
@@ -304,7 +314,7 @@ def run_rain_check_logic():
     except Exception as e:
         print(f"❌ Lỗi quét Vrain: {e}")
 
-    # 2. Quét KTTV
+    # 2. Quét riêng KTTV.vrain.vn
     try:
         kttv_data = fetch_kttv_rain_stations(min_rain=30.0)
         if kttv_data.get("has_warning"):
@@ -326,7 +336,7 @@ def run_rain_check_logic():
     except Exception as e:
         print(f"❌ Lỗi quét KTTV: {e}")
 
-# Các hàm phụ trợ giữ nguyên...
+# ==================== CÁC NGUỒN KHÁC (TRẠM, DÔNG SÉT, VNDMS, SẠT LỞ) ====================
 def get_station_status():
     now_vn = datetime.utcnow() + timedelta(hours=7)
     headers = {**HEADERS_DEFAULT, 'Content-Type': 'application/json'}
@@ -516,6 +526,7 @@ def format_nchmf_message(data, is_auto=False):
         msg += f"{icon} <b>{idx}. Địa bàn: {item['xa_2cap']}</b> ({item['huyen']})\n   └ Lũ quét: <i>{item['lu_quet']}</i> | Sạt lở: <i>{item['sat_lo']}</i>\n\n"
     return msg
 
+# ==================== XỬ LÝ LỆNH NGƯỜI DÙNG ====================
 def process_user_command(chat_id, text_raw):
     cmd = text_raw.split()[0].split("@")[0].lower() if text_raw else ""
 
@@ -524,10 +535,10 @@ def process_user_command(chat_id, text_raw):
         send_telegram_message(chat_id, format_station_message(st_data))
     elif cmd == "/vrain":
         vrain_data = fetch_vrain_rain_stations(min_rain=30.0)
-        send_telegram_message(chat_id, format_vrain_message(vrain_data) if vrain_data.get("has_warning") else f"🌧️ Chưa có trạm Vrain nào đạt 30mm.")
+        send_telegram_message(chat_id, format_vrain_message(vrain_data) if vrain_data.get("has_warning") else f"🌧️ <b>[GIÁM SÁT MƯA VRAIN.VN THANH HÓA]</b>\n\n✅ Chưa có trạm Vrain nào đạt ngưỡng 30mm.")
     elif cmd == "/nhandan":
         kttv_data = fetch_kttv_rain_stations(min_rain=30.0)
-        send_telegram_message(chat_id, format_kttv_message(kttv_data) if kttv_data.get("has_warning") else f"🌧️ Chưa có trạm nhân dân nào đạt 30mm.")
+        send_telegram_message(chat_id, format_kttv_message(kttv_data) if kttv_data.get("has_warning") else f"🌧️ <b>[GIÁM SÁT MƯA TRẠM NHÂN DÂN / KTTV THANH HÓA]</b>\n\n✅ Chưa có trạm nhân dân/KTTV nào đạt ngưỡng 30mm.")
     elif cmd == "/dong":
         iweather_data = get_iweather_storm_warning("Thanh Hóa")
         send_telegram_message(chat_id, format_iweather_message(iweather_data, is_auto=False))
@@ -537,13 +548,40 @@ def process_user_command(chat_id, text_raw):
     elif cmd in ["/luquet", "/satlo"]:
         landslide_data = get_nchmf_landslide_warning()
         send_telegram_message(chat_id, format_nchmf_message(landslide_data, is_auto=False))
+    elif cmd in ["/start", "/tong", "/thoitiet"]:
+        st_data = get_station_status()
+        vrain_data = fetch_vrain_rain_stations(min_rain=30.0)
+        kttv_data = fetch_kttv_rain_stations(min_rain=30.0)
+        iweather_data = get_iweather_storm_warning("Thanh Hóa")
+        vndms_data = get_vndms_warning()
+        landslide_data = get_nchmf_landslide_warning()
+
+        now_str = (datetime.utcnow() + timedelta(hours=7)).strftime("%H:%M %d/%m/%Y")
+        msg = f"📊 <b>[BÁO CÁO TỔNG HỢP THỜI TIẾT & HỆ THỐNG]</b>\n"
+        msg += f"🕒 <i>Thời gian:</i> <code>{now_str}</code>\n═══════════════════\n\n"
+
+        if st_data.get("status") == "success":
+            stations = st_data.get("stations", [])
+            online = sum(1 for s in stations if s["status"])
+            msg += f"📡 <b>TRẠM TỰ ĐỘNG:</b> 🟢 {online}/{len(stations)} trạm kết nối\n"
+        else:
+            msg += f"📡 <b>TRẠM TỰ ĐỘNG:</b> ❌ Lỗi kết nối API\n"
+
+        msg += f"🌧️ <b>MƯA VRAIN (≥ 30mm):</b> " + (f"⚠️ Có {vrain_data['count']} trạm\n" if vrain_data.get("has_warning") else "🟢 Bình thường\n")
+        msg += f"🌧️ <b>MƯA NHÂN DÂN (≥ 30mm):</b> " + (f"⚠️ Có {kttv_data['count']} trạm\n" if kttv_data.get("has_warning") else "🟢 Bình thường\n")
+        msg += f"🌩️ <b>DÔNG SÉT (iWeather):</b> " + (f"⚠️ Có {iweather_data['count']} vùng phát triển\n" if iweather_data.get("has_warning") else "🟢 An toàn\n")
+        msg += f"🏛️ <b>THIÊN TAI (VNDMS):</b> " + (f"🚨 Có {vndms_data['count']} bản tin khẩn\n" if vndms_data.get("has_warning") else "🟢 Không có cảnh báo\n")
+        msg += f"⛰️ <b>LŨ QUÉT & SẠT LỞ:</b> " + (f"⚠️ Có {landslide_data['count']} xã/vùng nguy cơ\n" if landslide_data.get("has_warning") else "🟢 An toàn\n")
+
+        msg += "\n💡 <i>Gõ lệnh riêng để xem chi tiết:</i>\n<code>/vrain</code> | <code>/nhandan</code> | <code>/tram</code> | <code>/dong</code> | <code>/thientai</code> | <code>/luquet</code>"
+        send_telegram_message(chat_id, msg)
 
 # ==================== ROUTE QUÉT ĐỊNH KỲ (CRON / SELF-PING) ====================
 @app.route('/')
 def home():
     global LAST_IWEATHER_COUNT, SENT_VNDMS_IDS, STATION_PREVIOUS_STATUS, SENT_LANDSLIDE_KEYS
     
-    # 0. Quét Mưa trực tiếp trong tiến trình route
+    # 0. Quét Mưa trực tiếp 2 nguồn trong tiến trình route chính
     run_rain_check_logic()
 
     # 1. Trạm
