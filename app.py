@@ -5,7 +5,6 @@ import time
 import requests
 import urllib3
 import threading
-from urllib.parse import quote
 from datetime import datetime, timedelta
 from flask import Flask, request, jsonify
 
@@ -135,21 +134,23 @@ def fetch_vrain_rain_stations(min_rain=30.0):
     updated_at = now_vn.strftime("%H:%M:%S %d/%m/%Y")
     
     from_dt = now_vn - timedelta(days=1) if now_vn.hour < 19 else now_vn
-    from_str = from_dt.strftime("19:00 %d/%m")
-    to_str = now_vn.strftime("%H:%M %d/%m")
+    from_str = from_dt.strftime("%Y-%m-%d 19:00:00")
+    to_str = now_vn.strftime("%Y-%m-%d %H:%M:%S")
     
     alerts = []
     seen_stations = set()
 
-    from_encoded = quote(from_str)
-    to_encoded = quote(to_str)
-
     for group_id in [None, 33]:
         try:
-            group_param = f"&groupID={group_id}" if group_id else ""
-            url_custom = f"{VRAIN_SUMMARY_URL}?from={from_encoded}&to={to_encoded}{group_param}&_t={int(time.time()*1000)}"
+            params = {
+                "from": from_str, 
+                "to": to_str, 
+                "_t": int(time.time() * 1000)
+            }
+            if group_id:
+                params["groupID"] = group_id
 
-            res = requests.get(url_custom, headers=HEADERS_DEFAULT, timeout=12)
+            res = requests.get(VRAIN_SUMMARY_URL, params=params, headers=HEADERS_DEFAULT, timeout=12)
             if res.status_code == 200:
                 data = res.json()
                 stats = data if isinstance(data, list) else (data.get("stats") or data.get("data") or [])
@@ -193,7 +194,7 @@ def fetch_vrain_rain_stations(min_rain=30.0):
         "has_warning": len(alerts) > 0,
         "count": len(alerts),
         "alerts": alerts,
-        "time_range": f"Từ {from_str} đến {to_str}",
+        "time_range": f"Từ 19:00 {from_dt.strftime('%d/%m')} đến {now_vn.strftime('%H:%M %d/%m')}",
         "updated_at": updated_at
     }
 
@@ -217,18 +218,21 @@ def fetch_kttv_rain_stations(min_rain=30.0):
     now_vn = datetime.utcnow() + timedelta(hours=7)
     updated_at = now_vn.strftime("%H:%M:%S %d/%m/%Y")
     
-    from_str = now_vn.strftime("00:00 %d/%m")
-    to_str = now_vn.strftime("%H:%M %d/%m")
+    from_str = now_vn.strftime("%Y-%m-%d 00:00:00")
+    to_str = now_vn.strftime("%Y-%m-%d %H:%M:%S")
     
     alerts = []
     seen_stations = set()
 
     try:
-        from_encoded = quote(from_str)
-        to_encoded = quote(to_str)
-        url_custom = f"{KTTV_SUMMARY_URL}?groupID=14&from={from_encoded}&to={to_encoded}&_t={int(time.time()*1000)}"
-
-        res = requests.get(url_custom, headers=HEADERS_DEFAULT, timeout=15)
+        params = {
+            "groupID": 14, 
+            "from": from_str, 
+            "to": to_str, 
+            "_t": int(time.time() * 1000)
+        }
+        
+        res = requests.get(KTTV_SUMMARY_URL, params=params, headers=HEADERS_DEFAULT, timeout=15)
         if res.status_code == 200:
             data = res.json()
             stats = data if isinstance(data, list) else (data.get("stats") or data.get("data") or [])
@@ -270,7 +274,7 @@ def fetch_kttv_rain_stations(min_rain=30.0):
         "has_warning": len(alerts) > 0,
         "count": len(alerts),
         "alerts": alerts,
-        "time_range": f"Từ {from_str} đến {to_str}",
+        "time_range": f"Từ 00:00 hôm nay đến {now_vn.strftime('%H:%M %d/%m')}",
         "updated_at": updated_at
     }
 
