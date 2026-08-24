@@ -181,109 +181,88 @@ def find_stations_list(data):
                 if nested: return nested
     return []
 
-# ==================== PARSER VRAIN CHUẨN 100% (ÉP LẤY DỮ LIỆU) ====================
+# ==================== PARSER VRAIN CHUẨN CURL (FIX LỖI RỖNG DO PARAMS) ====================
 
-# 🔴 QUAN TRỌNG: Đảm bảo Cookie này vẫn còn hạn sử dụng từ trình duyệt của bạn
+# 🔴 Dán Cookie mới nhất từ trình duyệt vào đây
 VRAIN_COOKIE = "_ga=GA1.1.43220944.1783145620; sid=61e50f07-8d77-4a34-af0d-0e0121ac775d"
 
-def fetch_rain_from_vrain_api(group_id, referer_url, min_rain=30.0):
+def fetch_rain_from_vrain_api(is_kttv=False, min_rain=30.0):
     now_vn = datetime.utcnow() + timedelta(hours=7)
     updated_at = now_vn.strftime("%H:%M:%S %d/%m/%Y")
     
-    # Thiết lập mốc thời gian chuẩn xác
-    if group_id == 14:
-        from_str = now_vn.strftime("%Y-%m-%d 00:00:00")
-        time_range_text = f"Từ 00:00 hôm nay đến {now_vn.strftime('%H:%M %d/%m')}"
+    if is_kttv:
         endpoint = "https://kttv.vrain.vn/api/vrain/private/v1/stats/summary"
+        referer = "https://kttv.vrain.vn/home/14/overview"
+        # Lưu ý: Có thể KTTV dùng UUID khác. Nếu lỗi, bạn sang F12 trang KTTV lấy lại UUID
+        org_uuid = "10a99a95-be60-4644-bbac-f43971302194" 
     else:
-        from_dt = now_vn - timedelta(days=1) if now_vn.hour < 19 else now_vn
-        from_str = from_dt.strftime("%Y-%m-%d 19:00:00")
-        time_range_text = f"Từ 19:00 {from_dt.strftime('%d/%m')} đến {now_vn.strftime('%H:%M %d/%m')}"
         endpoint = "https://vrain.vn/api/vrain/private/v1/stats/summary"
-
-    to_str = now_vn.strftime("%Y-%m-%d %H:%M:%S")
-    
-    # Bắt buộc phải có các tham số này để Vrain biết cần lấy dữ liệu của Tỉnh nào, giờ nào
-    payload_params = {
-        "groupID": group_id,
-        "from": from_str,
-        "to": to_str
-    }
+        referer = "https://vrain.vn/home/33/overview"
+        org_uuid = "10a99a95-be60-4644-bbac-f43971302194"
 
     headers = {
         'accept': 'application/json, text/plain, */*',
         'user-agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-        'x-org-uuid': '10a99a95-be60-4644-bbac-f43971302194',
-        'referer': referer_url,
-        'cookie': VRAIN_COOKIE,
-        'content-type': 'application/json'
+        'x-org-uuid': org_uuid,
+        'referer': referer,
+        'cookie': VRAIN_COOKIE
     }
     
     alerts = []
     seen_stations = set()
+    time_range_text = "Tự động lấy theo Vrain"
 
     try:
-        # 1. Thử gọi bằng GET trước
-        res = requests.get(endpoint, params=payload_params, headers=headers, timeout=12)
-        raw_data = []
+        # GỌI API THUẦN TÚY (KHÔNG TRUYỀN PARAMS)
+        res = requests.get(endpoint, headers=headers, timeout=12)
         
         if res.status_code == 200:
-            raw_data = res.json()
+            stats = res.json()
             
-        # 2. Nếu GET trả về rỗng (như lỗi bạn vừa gặp), lập tức quay xe dùng POST
-        if not raw_data or (isinstance(raw_data, list) and len(raw_data) == 0):
-            res = requests.post(endpoint, json=payload_params, headers=headers, timeout=12)
-            if res.status_code == 200:
-                raw_data = res.json()
+            # Đưa JSON về dạng mảng an toàn
+            if isinstance(stats, dict) and "data" in stats:
+                stats = stats["data"]
+            if not isinstance(stats, list):
+                stats = [stats] if isinstance(stats, dict) else []
 
-        # Quét tìm mảng chứa dữ liệu trạm
-        stats = []
-        if isinstance(raw_data, list):
-            stats = raw_data
-        elif isinstance(raw_data, dict):
-            for k, v in raw_data.items():
-                if isinstance(v, list):
-                    stats.extend(v)
-            if not stats:
-                stats = [raw_data]
+            for st in stats:
+                if not isinstance(st, dict): 
+                    continue
 
-        # Vòng lặp bóc tách dữ liệu
-        for st in stats:
-            if not isinstance(st, dict): 
-                continue
+                # Cập nhật khung giờ hiển thị thực tế từ Vrain
+                if time_range_text == "Tự động lấy theo Vrain" and st.get("from") and st.get("to"):
+                    time_range_text = f"Từ {st.get('from')} đến {st.get('to')}"
 
-            # Bắt đúng tên trạm theo F12
-            name = str(st.get("stationName") or st.get("name") or "Trạm không tên").strip()
-            area = str(st.get("area") or st.get("stationLocation") or "Thanh Hóa").strip()
+                # Lấy tên và vị trí trạm
+                name = str(st.get("stationName") or st.get("name") or "").strip()
+                area = str(st.get("area") or st.get("stationLocation") or "Thanh Hóa").strip()
 
-            if not name or name == "Trạm không tên":
-                continue
+                if not name or name == "Trạm không tên":
+                    continue
 
-            # Bắt đúng lượng mưa (sumDepth)
-            try:
-                rain_val = st.get("sumDepth")
-                if rain_val is None:
-                    rain_val = st.get("depth", 0.0)
-                rain = float(rain_val)
-            except (ValueError, TypeError):
-                rain = 0.0
+                # Lấy lượng mưa tích lũy
+                try:
+                    rain_val = st.get("sumDepth") if st.get("sumDepth") is not None else st.get("depth", 0.0)
+                    rain = float(rain_val)
+                except (ValueError, TypeError):
+                    rain = 0.0
 
-            # Lọc trạm từ 30mm trở lên
-            if rain >= min_rain:
-                st_key = name.lower()
-                if st_key not in seen_stations:
-                    seen_stations.add(st_key)
-                    alerts.append({
-                        "key": st_key,
-                        "name": name,
-                        "location": area,
-                        "rain": round(rain, 1)
-                    })
-                    
+                # Lọc trạm theo ngưỡng
+                if rain >= min_rain:
+                    st_key = name.lower()
+                    if st_key not in seen_stations:
+                        seen_stations.add(st_key)
+                        alerts.append({
+                            "key": st_key,
+                            "name": name,
+                            "location": area,
+                            "rain": round(rain, 1)
+                        })
+        else:
+            print(f"⚠️ Vrain API Trả về lỗi HTTP: {res.status_code}")
     except Exception as e:
         print(f"❌ Lỗi fetch Vrain: {e}")
 
-    # Sắp xếp lượng mưa từ cao xuống thấp
     alerts.sort(key=lambda x: x["rain"], reverse=True)
     
     return {
@@ -293,11 +272,12 @@ def fetch_rain_from_vrain_api(group_id, referer_url, min_rain=30.0):
         "time_range": time_range_text,
         "updated_at": updated_at
     }
+
 def fetch_vrain_rain_stations(min_rain=30.0):
-    return fetch_rain_from_vrain_api(group_id=33, referer_url="https://vrain.vn/home/33/overview", min_rain=min_rain)
+    return fetch_rain_from_vrain_api(is_kttv=False, min_rain=min_rain)
 
 def fetch_kttv_rain_stations(min_rain=30.0):
-    return fetch_rain_from_vrain_api(group_id=14, referer_url="https://kttv.vrain.vn/home/14/overview", min_rain=min_rain)
+    return fetch_rain_from_vrain_api(is_kttv=True, min_rain=min_rain)
 
 # ==================== TRẠM IOT, DÔNG SÉT, VNDMS, SẠT LỞ ====================
 def get_station_status():
