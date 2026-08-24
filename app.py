@@ -186,6 +186,7 @@ def format_rain_segmented_message(title, source_link, data):
     return msg
 
 # ==================== PARSER VRAIN TỐI ƯU THEO DEVTOOLS ====================
+# ==================== PARSER VRAIN CHUẨN 100% THEO F12 ====================
 def fetch_rain_from_vrain_api(group_id, referer_url, min_rain=30.0):
     now_vn = datetime.utcnow() + timedelta(hours=7)
     updated_at = now_vn.strftime("%H:%M:%S %d/%m/%Y")
@@ -216,47 +217,45 @@ def fetch_rain_from_vrain_api(group_id, referer_url, min_rain=30.0):
     seen_stations = set()
 
     try:
-        # Bắt buộc get referer để cập nhật cookie session tự động
         session.get(referer_url, timeout=5)
         res = session.get(endpoint, params=params, timeout=12)
         
         if res.status_code == 200:
             raw_data = res.json()
             
-            # Lấy mảng dữ liệu chính xác
             stats = []
             if isinstance(raw_data, list):
                 stats = raw_data
             elif isinstance(raw_data, dict):
-                stats = raw_data.get("stations") or raw_data.get("data") or raw_data.get("stats") or raw_data.get("result") or []
+                stats = raw_data.get("stations") or raw_data.get("data") or raw_data.get("stats") or []
 
             for st in stats:
                 if not isinstance(st, dict): 
                     continue
 
-                # 1. BÓC TÁCH OBJECT CON NẾU DỮ LIỆU LỒNG TRONG "station"
-                st_obj = st.get("station") if isinstance(st.get("station"), dict) else st
+                # 1. Bắt đúng Key Tỉnh Thanh Hóa (cityID = 27)
+                city_id = str(st.get("cityID", ""))
+                city_name = str(st.get("cityName", "")).lower()
+                if city_id != "27" and "thanh h" not in city_name:
+                    continue
 
-                # 2. LẤY TÊN TRẠM VÀ KHU VỰC
-                name = str(st.get("name") or st_obj.get("name") or st.get("stationName") or st_obj.get("stationName") or "").strip()
-                area = str(st.get("area") or st_obj.get("area") or st.get("location") or st_obj.get("location") or "Thanh Hóa").strip()
+                # 2. Bắt đúng Key Tên trạm và Khu vực
+                name = str(st.get("stationName") or st.get("name") or "Trạm không tên").strip()
+                area = str(st.get("area") or st.get("stationLocation") or "Thanh Hóa").strip()
 
                 if not name:
                     continue
 
-                # 3. LẤY GIÁ TRỊ LƯỢNG MƯA AN TOÀN
-                rain_val = st.get("depth")
-                if rain_val is None:
-                    rain_val = st_obj.get("depth")
-                if rain_val is None:
-                    rain_val = st.get("sumDepth") or st_obj.get("sumDepth", 0)
-
+                # 3. Bắt đúng Key Lượng mưa (sumDepth)
                 try:
+                    rain_val = st.get("sumDepth")
+                    if rain_val is None:
+                        rain_val = st.get("depth", 0.0)
                     rain = float(rain_val)
                 except (ValueError, TypeError):
                     rain = 0.0
 
-                # 4. LỌC CÁC TRẠM ĐẠT VÀ VƯỢT NGƯỠNG
+                # 4. Lọc trạm đạt ngưỡng
                 if rain >= min_rain:
                     st_key = name.lower()
                     if st_key not in seen_stations:
@@ -272,7 +271,9 @@ def fetch_rain_from_vrain_api(group_id, referer_url, min_rain=30.0):
     except Exception as e:
         print(f"❌ Lỗi fetch Vrain: {e}")
 
+    # Sắp xếp lượng mưa từ cao xuống thấp
     alerts.sort(key=lambda x: x["rain"], reverse=True)
+    
     return {
         "has_warning": len(alerts) > 0,
         "count": len(alerts),
