@@ -128,23 +128,27 @@ def check_rain_alert_level(st_key, rain, stage_dict):
 
     return should_alert, alert_tag
 
-# ==================== HÀM QUÉT MƯA CHUẨN XÁC DÙNG CHUNG ====================
-def fetch_rain_from_vrain_endpoint(api_url, group_id, referer_url, min_rain=30.0):
+# ==================== CẤU HÌNH API ĐẦY ĐỦ KHÔNG THIẾU BIẾN ====================
+VRAIN_SUMMARY_URL = "https://vrain.vn/api/vrain/private/v1/stats/summary"
+KTTV_SUMMARY_URL = "https://vrain.vn/api/vrain/private/v1/stats/summary"
+
+def fetch_rain_from_vrain_endpoint(api_url, group_id, referer_url="https://vrain.vn/home/33/overview", min_rain=30.0):
     now_vn = datetime.utcnow() + timedelta(hours=7)
     updated_at = now_vn.strftime("%H:%M:%S %d/%m/%Y")
     
     if group_id == 14:
         time_range_text = f"Từ 00:00 hôm nay đến {now_vn.strftime('%H:%M %d/%m')}"
+        referer = "https://kttv.vrain.vn/home/14/overview"
     else:
         from_dt = now_vn - timedelta(days=1) if now_vn.hour < 19 else now_vn
         time_range_text = f"Từ 19:00 {from_dt.strftime('%d/%m')} đến {now_vn.strftime('%H:%M %d/%m')}"
+        referer = referer_url
 
-    # Header bắt buộc có x-org-uuid và referer khớp với từng trang
     headers = {
         'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
         'Accept': 'application/json, text/plain, */*',
         'x-org-uuid': '10a99a95-be60-4644-bbac-f43971302194',
-        'referer': referer_url
+        'referer': referer
     }
 
     params = {
@@ -161,7 +165,6 @@ def fetch_rain_from_vrain_endpoint(api_url, group_id, referer_url, min_rain=30.0
         if res.status_code == 200:
             raw_data = res.json()
             
-            # Xử lý linh hoạt mọi cấu trúc JSON trả về (list hoặc dict bọc data/stats)
             stats = []
             if isinstance(raw_data, list):
                 stats = raw_data
@@ -176,7 +179,6 @@ def fetch_rain_from_vrain_endpoint(api_url, group_id, referer_url, min_rain=30.0
                 if not isinstance(st, dict):
                     continue
 
-                # Lọc chuẩn tỉnh Thanh Hóa (cityID = 27 hoặc 38, hoặc tên chứa thanh hóa)
                 city_id = str(st.get("cityID", ""))
                 city_name = str(st.get("cityName", "") or st.get("province", "") or st.get("area", "")).lower()
                 
@@ -220,12 +222,11 @@ def fetch_rain_from_vrain_endpoint(api_url, group_id, referer_url, min_rain=30.0
         "updated_at": updated_at
     }
 
-# Định nghĩa 2 hàm gọi riêng cho 2 lệnh /vrain và /nhandan
 def fetch_vrain_rain_stations(min_rain=30.0):
     return fetch_rain_from_vrain_endpoint(VRAIN_SUMMARY_URL, group_id=33, referer_url="https://vrain.vn/home/33/overview", min_rain=min_rain)
 
 def fetch_kttv_rain_stations(min_rain=30.0):
-    return fetch_rain_from_vrain_endpoint(KTTV_SUMMARY_URL, group_id=14, referer_url="https://kttv.vrain.vn/home/14/overview", min_rain=min_rain)
+    return fetch_rain_from_vrain_endpoint(KTTV_SUMMARY_URL, group_id=14, referer_url="https://kttv.vrain.vn/home/14/overview", min_rain=min_rain)ain)
 # ==================== NGUỒN 1: VRAIN.VN ====================
 def fetch_vrain_rain_stations(min_rain=30.0):
     return fetch_rain_from_vrain_endpoint(VRAIN_SUMMARY_URL, group_id=33, min_rain=min_rain)
