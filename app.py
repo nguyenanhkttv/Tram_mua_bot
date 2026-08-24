@@ -182,6 +182,7 @@ def fetch_rain_from_vrain_api(group_id, referer_url, min_rain=30.0):
     now_vn = datetime.utcnow() + timedelta(hours=7)
     updated_at = now_vn.strftime("%H:%M:%S %d/%m/%Y")
     
+    # Khung giờ tính lượng mưa chuẩn Vrain
     if group_id == 14:
         from_str = now_vn.strftime("%Y-%m-%d 00:00:00")
         time_range_text = f"Từ 00:00 hôm nay đến {now_vn.strftime('%H:%M %d/%m')}"
@@ -209,22 +210,25 @@ def fetch_rain_from_vrain_api(group_id, referer_url, min_rain=30.0):
         if res.status_code == 200:
             raw_data = res.json()
             
+            # Xử lý linh hoạt tất cả các kiểu bọc mảng của Vrain
             stats = []
             if isinstance(raw_data, list):
                 stats = raw_data
             elif isinstance(raw_data, dict):
-                stats = raw_data.get("stations") or raw_data.get("data") or raw_data.get("stats") or []
+                stats = raw_data.get("stations") or raw_data.get("data") or raw_data.get("stats") or raw_data.get("result") or []
 
             for st in stats:
                 if not isinstance(st, dict): 
                     continue
 
-                # CHỈ DÙNG ĐÚNG CÁC KEY NHƯ DEVTOOLS HIỂN THỊ
-                name = str(st.get("name") or "Trạm không tên").strip()
-                area = str(st.get("area") or "Thanh Hóa").strip()
+                # Lấy tên trạm & khu vực
+                name = str(st.get("name") or st.get("stationName") or "Trạm không tên").strip()
+                area = str(st.get("area") or st.get("location") or "Thanh Hóa").strip()
                 
+                # Ép kiểu mưa an toàn (độ sâu mưa tích lũy)
                 try:
-                    rain = float(st.get("depth", 0.0))
+                    rain_val = st.get("depth") if st.get("depth") is not None else st.get("sumDepth", 0.0)
+                    rain = float(rain_val)
                 except (ValueError, TypeError):
                     rain = 0.0
 
@@ -243,7 +247,9 @@ def fetch_rain_from_vrain_api(group_id, referer_url, min_rain=30.0):
     except Exception as e:
         print(f"❌ Lỗi fetch Vrain: {e}")
 
+    # Sắp xếp trạm mưa lớn nhất lên đầu
     alerts.sort(key=lambda x: x["rain"], reverse=True)
+    
     return {
         "has_warning": len(alerts) > 0,
         "count": len(alerts),
