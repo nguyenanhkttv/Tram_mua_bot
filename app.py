@@ -97,41 +97,80 @@ def broadcast_alert(text):
         send_telegram_message(chat_id, text)
 
 # ==================== LOGIC PHÂN CẤP CẢNH BÁO MƯA ====================
-def check_rain_alert_level(st_key, rain, stage_dict):
-    state = stage_dict.get(st_key, {"stage": 0, "last_rain": 0.0})
-    prev_stage = state["stage"]
-    prev_rain = state["last_rain"]
+def fetch_rain_from_vrain_api(group_id, referer_url, min_rain=30.0):
+    now_vn = datetime.utcnow() + timedelta(hours=7)
+    updated_at = now_vn.strftime("%H:%M:%S %d/%m/%Y")
+    
+    if group_id == 14:
+        from_str = now_vn.strftime("%Y-%m-%d 00:00:00")
+        time_range_text = f"Từ 00:00 hôm nay đến {now_vn.strftime('%H:%M %d/%m')}"
+    else:
+        from_dt = now_vn - timedelta(days=1) if now_vn.hour < 19 else now_vn
+        from_str = from_dt.strftime("%Y-%m-%d 19:00:00")
+        time_range_text = f"Từ 19:00 {from_dt.strftime('%d/%m')} đến {now_vn.strftime('%H:%M %d/%m')}"
+        
+    to_str = now_vn.strftime("%Y-%m-%d %H:%M:%S")
+    endpoint = KTTV_SUMMARY_URL if group_id == 14 else VRAIN_SUMMARY_URL
+    headers = {**HEADERS_VRAIN, 'referer': referer_url}
+    
+    params = {
+        "groupID": group_id,
+        "from": from_str,
+        "to": to_str,
+        "_t": int(time.time() * 1000)
+    }
 
-    should_alert = False
-    alert_tag = ""
+    alerts = []
+    seen_stations = set()
 
-    if rain >= 100.0:
-        if prev_stage < 4:
-            should_alert = True
-            alert_tag = "🚨 [ĐẠT NGƯỠNG RẤT NGUY HIỂM ≥ 100MM]"
-            stage_dict[st_key] = {"stage": 4, "last_rain": rain}
-        elif rain > prev_rain:
-            should_alert = True
-            alert_tag = "🚨 [MƯA CỰC LỚN LIÊN TỤC ≥ 100MM - ĐANG TĂNG]"
-            stage_dict[st_key] = {"stage": 4, "last_rain": rain}
+    try:
+        res = requests.get(endpoint, params=params, headers=headers, timeout=12)
+        if res.status_code == 200:
+            raw_data = res.json()
+            
+            # Đọc danh sách trạm từ JSON
+            stats = []
+            if isinstance(raw_data, list):
+                stats = raw_data
+            elif isinstance(raw_data, dict):
+                stats = raw_data.get("stations") or raw_data.get("data") or raw_data.get("stats") or []
 
-    elif rain >= 50.0:
-        if prev_stage < 2:
-            should_alert = True
-            alert_tag = "⚠️ [CẢNH BÁO LẦN 2: MƯA TĂNG LÊN ≥ 50MM]"
-            stage_dict[st_key] = {"stage": 2, "last_rain": rain}
-        elif prev_stage == 2 and (rain - prev_rain) >= 15.0:
-            should_alert = True
-            alert_tag = "⚠️ [CẢNH BÁO LẦN 3: MƯA TĂNG MẠNH TRONG KHOẢNG 50-100MM]"
-            stage_dict[st_key] = {"stage": 3, "last_rain": rain}
+            for st in stats:
+                if not isinstance(st, dict): 
+                    continue
 
-    elif rain >= 30.0:
-        if prev_stage < 1:
-            should_alert = True
-            alert_tag = "🌧️ [CẢNH BÁO LẦN 1: ĐẠT NGƯỠNG ≥ 30MM]"
-            stage_dict[st_key] = {"stage": 1, "last_rain": rain}
+                # LẤY ĐÚNG TÊN TỪ DEVTOOLS (name, depth, area)
+                name = str(st.get("name") or "Trạm không tên").strip()
+                area = str(st.get("area") or "Thanh Hóa").strip()
+                
+                try:
+                    rain = float(st.get("depth", 0.0))
+                except (ValueError, TypeError):
+                    rain = 0.0
 
-    return should_alert, alert_tag
+                if rain >= min_rain:
+                    st_key = name.lower()
+                    if st_key not in seen_stations:
+                        seen_stations.add(st_key)
+                        alerts.append({
+                            "key": st_key,
+                            "name": name,
+                            "location": area,
+                            "rain": round(rain, 1)
+                        })
+        else:
+            print(f"⚠️ Vrain API Trả về lỗi: {res.status_code}")
+    except Exception as e:
+        print(f"❌ Lỗi fetch Vrain: {e}")
+
+    alerts.sort(key=lambda x: x["rain"], reverse=True)
+    return {
+        "has_warning": len(alerts) > 0,
+        "count": len(alerts),
+        "alerts": alerts,
+        "time_range": time_range_text,
+        "updated_at": updated_at
+    }
 
 # ==================== HÀM FORMAT BÁO CÁO PHÂN PHÚC MƯA ====================
 def format_rain_segmented_message(title, source_link, data):
