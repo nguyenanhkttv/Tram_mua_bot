@@ -13,8 +13,6 @@ urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 # ==================== CẤU HÌNH API ====================
 IWEATHER_STORM_URL = "https://iweather.gov.vn/product/warningstorm?token=null"
 VNDMS_WARNING_URL = "https://vndms.gov.vn/EventDisaster/WarningEvent"
-VVRAIN_SUMMARY_URL = "https://vrain.vn/api/vrain/private/v1/stats/summary"
-KTTV_SUMMARY_URL = "https://kttv.vrain.vn/api/vrain/private/v1/stats/summary"
 NCHMF_CANHBAO_URL = "https://luquetsatlo.nchmf.gov.vn/LayerMapBox/getDSCanhbaoSLLQ"
 
 IOT_STATION_URL = os.environ.get("IOT_STATION_URL", "http://iot.vientnmt.com:8888/api/DataAPI/ReadDeviceUser")
@@ -128,7 +126,7 @@ def check_rain_alert_level(st_key, rain, stage_dict):
 
     return should_alert, alert_tag
 
-# ==================== NGUỒN 1: VRAIN CHUYÊN ĐỀ (vrain.vn - groupID 33) ====================
+# ==================== NGUỒN 1: VRAIN CHUYÊN ĐỀ (groupID 33) ====================
 def fetch_vrain_rain_stations(min_rain=30.0):
     now_vn = datetime.utcnow() + timedelta(hours=7)
     updated_at = now_vn.strftime("%H:%M:%S %d/%m/%Y")
@@ -152,7 +150,6 @@ def fetch_vrain_rain_stations(min_rain=30.0):
             raw_data = res.json()
             stats = []
             
-            # Quét tìm mảng dữ liệu
             if isinstance(raw_data, list):
                 stats = raw_data
             elif isinstance(raw_data, dict):
@@ -166,15 +163,12 @@ def fetch_vrain_rain_stations(min_rain=30.0):
                 if not isinstance(st, dict):
                     continue
 
-                # Vrain chuyên đề: thông tin trạm nằm trong object "station"
                 st_obj = st.get("station", st) if isinstance(st.get("station"), dict) else st
-                
                 name = str(st_obj.get("stationName") or st_obj.get("name") or "").strip()
                 if not name:
                     continue
 
                 try:
-                    # Lượng mưa nằm ở tầng ngoài "sumDepth" hoặc "depth"
                     rain_raw = st.get("sumDepth")
                     if rain_raw is None:
                         rain_raw = st.get("depth", 0)
@@ -204,8 +198,22 @@ def fetch_vrain_rain_stations(min_rain=30.0):
         "updated_at": updated_at
     }
 
+def format_vrain_message(data):
+    msg = f"🌧️ <b>[CẢNH BÁO MƯA VRAIN.VN THANH HÓA]</b>\n"
+    msg += f"🕒 <i>Cập nhật:</i> <code>{data['updated_at']}</code>\n"
+    msg += f"📅 <i>Khung giờ tính:</i> <code>{data['time_range']}</code>\n"
+    msg += f"📊 <i>Số trạm đạt ngưỡng:</i> <b>{data['count']} trạm</b>\n"
+    msg += "───────────────────\n"
 
-# ==================== NGUỒN 2: KTTV BẮC TRUNG BỘ (kttv.vrain.vn - groupID 14) ====================
+    for idx, alert in enumerate(data['alerts'], 1):
+        tag = f"\n └ <i>{alert['tag']}</i>" if "tag" in alert else ""
+        msg += f"📍 <b>{idx}. Trạm: {alert['name']}</b> ({alert['location']})\n"
+        msg += f" 🌧️ <i>Lượng mưa tích lũy:</i> <b>{alert['rain']} mm</b>{tag}\n\n"
+
+    msg += "🌐 <i>Nguồn dữ liệu: vrain.vn</i>"
+    return msg
+
+# ==================== NGUỒN 2: KTTV BẮC TRUNG BỘ (groupID 14) ====================
 def fetch_kttv_rain_stations(min_rain=30.0):
     now_vn = datetime.utcnow() + timedelta(hours=7)
     updated_at = now_vn.strftime("%H:%M:%S %d/%m/%Y")
@@ -228,7 +236,6 @@ def fetch_kttv_rain_stations(min_rain=30.0):
         if res.status_code == 200:
             raw_data = res.json()
             
-            # Quét đệ quy lấy tất cả các node trạm nằm sâu trong các dải số (00-99, 100-168)
             extracted_stations = []
             def deep_extract(node):
                 if isinstance(node, list):
@@ -247,7 +254,6 @@ def fetch_kttv_rain_stations(min_rain=30.0):
                 if not isinstance(st, dict):
                     continue
 
-                # KTTV: thông tin trạm nằm trực tiếp ở cấp độ node
                 name = str(st.get("stationName") or st.get("name") or "").strip()
                 if not name or name == "Trạm không tên":
                     continue
@@ -284,34 +290,6 @@ def fetch_kttv_rain_stations(min_rain=30.0):
         "time_range": time_range_text,
         "updated_at": updated_at
     }
-
-def fetch_vrain_rain_stations(min_rain=30.0):
-    return fetch_rain_from_vrain_endpoint(VRAIN_SUMMARY_URL, group_id=33, referer_url="https://vrain.vn/home/33/overview", min_rain=min_rain)
-
-def fetch_kttv_rain_stations(min_rain=30.0):
-    return fetch_rain_from_vrain_endpoint(KTTV_SUMMARY_URL, group_id=14, referer_url="https://kttv.vrain.vn/home/14/overview", min_rain=min_rain)
-# ==================== NGUỒN 1: VRAIN.VN ====================
-def fetch_vrain_rain_stations(min_rain=30.0):
-    return fetch_rain_from_vrain_endpoint(VRAIN_SUMMARY_URL, group_id=33, min_rain=min_rain)
-
-def format_vrain_message(data):
-    msg = f"🌧️ <b>[CẢNH BÁO MƯA VRAIN.VN THANH HÓA]</b>\n"
-    msg += f"🕒 <i>Cập nhật:</i> <code>{data['updated_at']}</code>\n"
-    msg += f"📅 <i>Khung giờ tính:</i> <code>{data['time_range']}</code>\n"
-    msg += f"📊 <i>Số trạm đạt ngưỡng:</i> <b>{data['count']} trạm</b>\n"
-    msg += "───────────────────\n"
-
-    for idx, alert in enumerate(data['alerts'], 1):
-        tag = f"\n └ <i>{alert['tag']}</i>" if "tag" in alert else ""
-        msg += f"📍 <b>{idx}. Trạm: {alert['name']}</b> ({alert['location']})\n"
-        msg += f" 🌧️ <i>Lượng mưa tích lũy:</i> <b>{alert['rain']} mm</b>{tag}\n\n"
-
-    msg += "🌐 <i>Nguồn dữ liệu: vrain.vn</i>"
-    return msg
-
-# ==================== NGUỒN 2: KTTV.VRAIN.VN ====================
-def fetch_kttv_rain_stations(min_rain=30.0):
-    return fetch_rain_from_vrain_endpoint(KTTV_SUMMARY_URL, group_id=14, min_rain=min_rain)
 
 def format_kttv_message(data):
     msg = f"🌧️ <b>[CẢNH BÁO MƯA TRẠM NHÂN DÂN / KTTV THANH HÓA]</b>\n"
