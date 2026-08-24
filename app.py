@@ -224,8 +224,8 @@ def format_vrain_message(data):
 
     msg += "🌐 <i>Nguồn dữ liệu: vrain.vn</i>"
     return msg
-
-# ==================== NGUỒN 2: KTTV BẮC TRUNG BỘ (groupID 14) ====================
+VRAIN_COOKIE = os.getenv("VRAIN_COOKIE", "")
+KTTV_COOKIE = os.getenv("KTTV_COOKIE", "")
 # ==================== NGUỒN 2: KTTV BẮC TRUNG BỘ (groupID 14) ====================
 def fetch_kttv_rain_stations(min_rain=30.0):
     now_vn = datetime.utcnow() + timedelta(hours=7)
