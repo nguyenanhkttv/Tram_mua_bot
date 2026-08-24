@@ -13,6 +13,8 @@ urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 # ==================== CẤU HÌNH API ====================
 IWEATHER_STORM_URL = "https://iweather.gov.vn/product/warningstorm?token=null"
 VNDMS_WARNING_URL = "https://vndms.gov.vn/EventDisaster/WarningEvent"
+VRAIN_SUMMARY_URL = "https://vrain.vn/api/v2/home/33/summary"
+KTTV_SUMMARY_URL = "https://kttv.vrain.vn/api/v2/home/14/summary"
 NCHMF_CANHBAO_URL = "https://luquetsatlo.nchmf.gov.vn/LayerMapBox/getDSCanhbaoSLLQ"
 
 IOT_STATION_URL = os.environ.get("IOT_STATION_URL", "http://iot.vientnmt.com:8888/api/DataAPI/ReadDeviceUser")
@@ -126,40 +128,21 @@ def check_rain_alert_level(st_key, rain, stage_dict):
 
     return should_alert, alert_tag
 
-# ==================== NGUỒN 1: VRAIN CHUYÊN ĐỀ (groupID 33) ====================
+# ==================== NGUỒN 1: VRAIN.VN (groupID 33) ====================
 def fetch_vrain_rain_stations(min_rain=30.0):
     now_vn = datetime.utcnow() + timedelta(hours=7)
     updated_at = now_vn.strftime("%H:%M:%S %d/%m/%Y")
     time_range_text = f"Từ 19:00 hôm trước đến {now_vn.strftime('%H:%M %d/%m')}"
     
-    url = "https://vrain.vn/api/vrain/private/v1/stats/summary"
-    headers = {
-        'Host': 'vrain.vn',
-        'Connection': 'keep-alive',
-        'sec-ch-ua': '"Not_A Brand";v="8", "Chromium";v="120", "Google Chrome";v="120"',
-        'sec-ch-ua-mobile': '?0',
-        'sec-ch-ua-platform': '"Windows"',
-        'Upgrade-Insecure-Requests': '1',
-        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-        'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8',
-        'Accept-Encoding': 'gzip, deflate, br',
-        'Accept-Language': 'vi-VN,vi;q=0.9,en-US;q=0.6,en;q=0.5',
-        'x-org-uuid': '10a99a95-be60-4644-bbac-f43971302194',
-        'referer': 'https://vrain.vn/home/33/overview'
-    }
-    params = {"groupID": 33, "_t": int(time.time() * 1000)}
-
+    headers = {**HEADERS_DEFAULT, 'Referer': 'https://vrain.vn/home/33/overview'}
     alerts = []
     seen_stations = set()
 
     try:
-        res = requests.get(url, params=params, headers=headers, timeout=15)
-        print(f"DEBUG Vrain 33 Status: {res.status_code}")
-        
+        res = requests.get(VRAIN_SUMMARY_URL, headers=headers, timeout=12)
         if res.status_code == 200:
             raw_data = res.json()
             stats = []
-            
             if isinstance(raw_data, list):
                 stats = raw_data
             elif isinstance(raw_data, dict):
@@ -172,8 +155,15 @@ def fetch_vrain_rain_stations(min_rain=30.0):
             for st in stats:
                 if not isinstance(st, dict):
                     continue
-
                 st_obj = st.get("station", st) if isinstance(st.get("station"), dict) else st
+                
+                city_id = str(st_obj.get("cityID", ""))
+                city_name = str(st_obj.get("cityName", "") or st_obj.get("province", "") or st_obj.get("area", "")).lower()
+                
+                if not (city_id in ["27", "38"] or "thanh h" in city_name or "thanh hóa" in city_name):
+                    if not st_obj.get("stationName") and not st_obj.get("name"):
+                        continue
+
                 name = str(st_obj.get("stationName") or st_obj.get("name") or "").strip()
                 if not name:
                     continue
@@ -199,7 +189,7 @@ def fetch_vrain_rain_stations(min_rain=30.0):
                             "rain": round(rain_total, 1)
                         })
     except Exception as e:
-        print(f"❌ Lỗi fetch Vrain 33: {e}")
+        print(f"❌ Lỗi Vrain Summary: {e}")
 
     alerts.sort(key=lambda x: x["rain"], reverse=True)
     return {
@@ -224,38 +214,19 @@ def format_vrain_message(data):
 
     msg += "🌐 <i>Nguồn dữ liệu: vrain.vn</i>"
     return msg
-VRAIN_COOKIE = os.getenv("VRAIN_COOKIE", "")
-KTTV_COOKIE = os.getenv("KTTV_COOKIE", "")
-# ==================== NGUỒN 2: KTTV BẮC TRUNG BỘ (groupID 14) ====================
+
+# ==================== NGUỒN 2: KTTV.VRAIN.VN (groupID 14) ====================
 def fetch_kttv_rain_stations(min_rain=30.0):
     now_vn = datetime.utcnow() + timedelta(hours=7)
     updated_at = now_vn.strftime("%H:%M:%S %d/%m/%Y")
     time_range_text = f"Từ 00:00 hôm nay đến {now_vn.strftime('%H:%M %d/%m')}"
     
-    url = "https://kttv.vrain.vn/api/vrain/private/v1/stats/summary"
-    headers = {
-        'Host': 'kttv.vrain.vn',
-        'Connection': 'keep-alive',
-        'sec-ch-ua': '"Not_A Brand";v="8", "Chromium";v="120", "Google Chrome";v="120"',
-        'sec-ch-ua-mobile': '?0',
-        'sec-ch-ua-platform': '"Windows"',
-        'Upgrade-Insecure-Requests': '1',
-        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-        'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8',
-        'Accept-Encoding': 'gzip, deflate, br',
-        'Accept-Language': 'vi-VN,vi;q=0.9,en-US;q=0.6,en;q=0.5',
-        'x-org-uuid': '10a99a95-be60-4644-bbac-f43971302194',
-        'referer': 'https://kttv.vrain.vn/home/14/overview'
-    }
-    params = {"groupID": 14, "_t": int(time.time() * 1000)}
-
+    headers = {**HEADERS_DEFAULT, 'Referer': 'https://kttv.vrain.vn/home/14/overview'}
     alerts = []
     seen_stations = set()
 
     try:
-        res = requests.get(url, params=params, headers=headers, timeout=15)
-        print(f"DEBUG KTTV 14 Status: {res.status_code}")
-        
+        res = requests.get(KTTV_SUMMARY_URL, headers=headers, timeout=15)
         if res.status_code == 200:
             raw_data = res.json()
             
@@ -303,7 +274,7 @@ def fetch_kttv_rain_stations(min_rain=30.0):
                             "rain": round(rain_total, 1)
                         })
     except Exception as e:
-        print(f"❌ Lỗi fetch KTTV 14: {e}")
+        print(f"❌ Lỗi KTTV Summary: {e}")
 
     alerts.sort(key=lambda x: x["rain"], reverse=True)
     return {
