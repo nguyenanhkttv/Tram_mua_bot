@@ -214,7 +214,7 @@ def fetch_vrain_rain_stations(min_rain=30.0):
                     city_id = str(st_obj.get("cityID", ""))
                     city_name = str(st_obj.get("cityName", "") or st_obj.get("province", "") or st_obj.get("area") or st_obj.get("location") or "").lower()
                     
-                    if not (city_id in ["27", "38"] or "thanh h" in city_name):
+                    if not (city_id in ["27", "38"] or "THANH HÓA" in city_name):
                         continue
 
                     try:
@@ -291,7 +291,7 @@ def fetch_kttv_rain_stations(min_rain=30.0):
                 city_id = str(st.get("cityID", ""))
                 city_name = str(st.get("cityName", "") or st.get("province", "") or "").lower()
                 
-                if not (city_id == "27" or "thanh h" in city_name):
+                if not (city_id == "27" or "THANH HÓA" in city_name):
                     continue
                     
                 st_name = st.get("stationName") or st.get("name") or "Trạm không tên"
