@@ -128,12 +128,9 @@ def check_rain_alert_level(st_key, rain, stage_dict):
 
     return should_alert, alert_tag
 
-# ==================== CẤU HÌNH API ĐẦY ĐỦ KHÔNG THIẾU BIẾN ====================
-VRAIN_SUMMARY_URL = "https://vrain.vn/api/vrain/private/v1/stats/summary"
-KTTV_SUMMARY_URL = "https://vrain.vn/api/vrain/private/v1/stats/summary"
-
-# Dán chuỗi cookie thực tế từ tab Network (F12) của bạn vào đây nếu chuỗi cũ hết hạn
-VRAIN_COOKIE_STR = "_ga=GA1.1.43220944.1783145620; sid=61e50f07-8d77-4a34-af0d-0e0121ac775d; _ga_P14ZMM778Z=GS2.1.s1787561025$o15$g1$t1787563721$j42$l0$h0"
+# ==================== SỬ DỤNG ENDPOINT CÔNG KHAI KHÔNG CẦN COOKIE ====================
+VRAIN_SUMMARY_URL = "https://vrain.vn/api/v2/home/33/summary"
+KTTV_SUMMARY_URL = "https://kttv.vrain.vn/api/v2/home/14/summary"
 
 def fetch_rain_from_vrain_endpoint(api_url, group_id, referer_url="https://vrain.vn/home/33/overview", min_rain=30.0):
     now_vn = datetime.utcnow() + timedelta(hours=7)
@@ -141,29 +138,22 @@ def fetch_rain_from_vrain_endpoint(api_url, group_id, referer_url="https://vrain
     
     if group_id == 14:
         time_range_text = f"Từ 00:00 hôm nay đến {now_vn.strftime('%H:%M %d/%m')}"
-        referer = "https://kttv.vrain.vn/home/14/overview"
     else:
         from_dt = now_vn - timedelta(days=1) if now_vn.hour < 19 else now_vn
         time_range_text = f"Từ 19:00 {from_dt.strftime('%d/%m')} đến {now_vn.strftime('%H:%M %d/%m')}"
-        referer = referer_url
 
+    # Dùng Header sạch tiêu chuẩn để tránh bị chặn IP từ Cloud Server
     headers = {
         'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
         'Accept': 'application/json, text/plain, */*',
-        'x-org-uuid': '10a99a95-be60-4644-bbac-f43971302194',
-        'referer': referer
-    }
-
-    params = {
-        "groupID": group_id,
-        "_t": int(time.time() * 1000)
+        'Referer': referer_url
     }
 
     alerts = []
     seen_stations = set()
 
     try:
-        res = requests.get(api_url, params=params, headers=headers, timeout=15)
+        res = requests.get(api_url, headers=headers, timeout=15)
         
         if res.status_code == 200:
             raw_data = res.json()
@@ -182,19 +172,24 @@ def fetch_rain_from_vrain_endpoint(api_url, group_id, referer_url="https://vrain
                 if not isinstance(st, dict):
                     continue
 
-                city_id = str(st.get("cityID", ""))
-                city_name = str(st.get("cityName", "") or st.get("province", "") or st.get("area", "")).lower()
+                # Hỗ trợ bọc object station nếu có
+                st_obj = st.get("station", st) if isinstance(st.get("station"), dict) else st
+                
+                city_id = str(st_obj.get("cityID", ""))
+                city_name = str(st_obj.get("cityName", "") or st_obj.get("province", "") or st_obj.get("area", "")).lower()
                 
                 if not (city_id in ["27", "38"] or "thanh h" in city_name or "thanh hóa" in city_name):
-                    if not st.get("stationName") and not st.get("name"):
+                    if not st_obj.get("stationName") and not st_obj.get("name"):
                         continue
 
-                st_name = str(st.get("stationName") or st.get("name") or "").strip()
+                st_name = str(st_obj.get("stationName") or st_obj.get("name") or "").strip()
                 if not st_name:
                     continue
 
                 try:
                     rain_raw = st.get("sumDepth")
+                    if rain_raw is None:
+                        rain_raw = st_obj.get("sumDepth")
                     if rain_raw is None:
                         rain_raw = st.get("depth", 0)
                     rain_total = float(rain_raw)
@@ -208,7 +203,7 @@ def fetch_rain_from_vrain_endpoint(api_url, group_id, referer_url="https://vrain
                         alerts.append({
                             "key": st_key,
                             "name": st_name,
-                            "location": str(st.get("area") or st.get("stationLocation") or "Thanh Hóa").strip(),
+                            "location": str(st_obj.get("area") or st_obj.get("stationLocation") or "Thanh Hóa").strip(),
                             "rain": round(rain_total, 1)
                         })
         else:
