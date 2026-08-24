@@ -150,6 +150,9 @@ def extract_station_list(raw_data):
     return stats
 
 # ==================== NGUỒN 1: VRAIN.VN ====================
+from urllib.parse import quote
+
+# ==================== NGUỒN 1: VRAIN.VN ====================
 def fetch_vrain_rain_stations(min_rain=30.0):
     now_vn = datetime.utcnow() + timedelta(hours=7)
     updated_at = now_vn.strftime("%H:%M:%S %d/%m/%Y")
@@ -158,20 +161,19 @@ def fetch_vrain_rain_stations(min_rain=30.0):
     from_str = from_dt.strftime("19:00 %d/%m")
     to_str = now_vn.strftime("%H:%M %d/%m")
     
+    # Mã hóa khoảng trắng thành %20 bắt buộc cho API Vrain
+    from_enc = quote(from_str)
+    to_enc = quote(to_str)
+    
     alerts = []
     seen_stations = set()
 
     for group_id in [None, 33]:
         try:
-            params = {
-                "from": from_str, 
-                "to": to_str, 
-                "_t": int(time.time() * 1000)
-            }
-            if group_id:
-                params["groupID"] = group_id
+            group_param = f"&groupID={group_id}" if group_id else ""
+            url_custom = f"{VRAIN_DETAILS_URL}?from={from_enc}&to={to_enc}{group_param}&_t={int(time.time()*1000)}"
 
-            res = requests.get(VRAIN_DETAILS_URL, params=params, headers=HEADERS_DEFAULT, timeout=12)
+            res = requests.get(url_custom, headers=HEADERS_DEFAULT, timeout=12)
             if res.status_code == 200:
                 stats = extract_station_list(res.json())
                 
@@ -216,21 +218,6 @@ def fetch_vrain_rain_stations(min_rain=30.0):
         "updated_at": updated_at
     }
 
-def format_vrain_message(data):
-    msg = f"🌧️ <b>[CẢNH BÁO MƯA VRAIN.VN THANH HÓA]</b>\n"
-    msg += f"🕒 <i>Cập nhật:</i> <code>{data['updated_at']}</code>\n"
-    msg += f"📅 <i>Khung giờ tính:</i> <code>{data['time_range']}</code>\n"
-    msg += f"📊 <i>Số trạm đạt ngưỡng:</i> <b>{data['count']} trạm</b>\n"
-    msg += "───────────────────\n"
-
-    for idx, alert in enumerate(data['alerts'], 1):
-        tag = f"\n └ <i>{alert['tag']}</i>" if "tag" in alert else ""
-        msg += f"📍 <b>{idx}. Trạm: {alert['name']}</b> ({alert['location']})\n"
-        msg += f" 🌧️ <i>Lượng mưa tích lũy:</i> <b>{alert['rain']} mm</b>{tag}\n\n"
-
-    msg += "🌐 <i>Nguồn dữ liệu: vrain.vn</i>"
-    return msg
-
 # ==================== NGUỒN 2: KTTV.VRAIN.VN ====================
 def fetch_kttv_rain_stations(min_rain=30.0):
     now_vn = datetime.utcnow() + timedelta(hours=7)
@@ -239,18 +226,16 @@ def fetch_kttv_rain_stations(min_rain=30.0):
     from_str = now_vn.strftime("00:00 %d/%m")
     to_str = now_vn.strftime("%H:%M %d/%m")
     
+    from_enc = quote(from_str)
+    to_enc = quote(to_str)
+    
     alerts = []
     seen_stations = set()
 
     try:
-        params = {
-            "groupID": 14, 
-            "from": from_str, 
-            "to": to_str, 
-            "_t": int(time.time() * 1000)
-        }
+        url_custom = f"{KTTV_DETAILS_URL}?groupID=14&from={from_enc}&to={to_enc}&_t={int(time.time()*1000)}"
         
-        res = requests.get(KTTV_DETAILS_URL, params=params, headers=HEADERS_DEFAULT, timeout=15)
+        res = requests.get(url_custom, headers=HEADERS_DEFAULT, timeout=15)
         if res.status_code == 200:
             stats = extract_station_list(res.json())
 
