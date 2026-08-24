@@ -132,6 +132,9 @@ def check_rain_alert_level(st_key, rain, stage_dict):
 VRAIN_SUMMARY_URL = "https://vrain.vn/api/vrain/private/v1/stats/summary"
 KTTV_SUMMARY_URL = "https://vrain.vn/api/vrain/private/v1/stats/summary"
 
+# Dán chuỗi cookie thực tế từ tab Network (F12) của bạn vào đây nếu chuỗi cũ hết hạn
+VRAIN_COOKIE_STR = "_ga=GA1.1.43220944.1783145620; sid=61e50f07-8d77-4a34-af0d-0e0121ac775d; _ga_P14ZMM778Z=GS2.1.s1787561025$o15$g1$t1787563721$j42$l0$h0"
+
 def fetch_rain_from_vrain_endpoint(api_url, group_id, referer_url="https://vrain.vn/home/33/overview", min_rain=30.0):
     now_vn = datetime.utcnow() + timedelta(hours=7)
     updated_at = now_vn.strftime("%H:%M:%S %d/%m/%Y")
