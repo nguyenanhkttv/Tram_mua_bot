@@ -232,8 +232,9 @@ def fetch_kttv_rain_stations(min_rain=30.0):
     now_vn = datetime.utcnow() + timedelta(hours=7)
     updated_at = now_vn.strftime("%H:%M:%S %d/%m/%Y")
     
-    from_str = now_vn.strftime("%Y-%m-%d 00:00:00")
-    to_str = now_vn.strftime("%Y-%m-%d %H:%M:%S")
+    # Format chuẩn đúng theo DevTools Vrain yêu cầu: HH:mm dd/MM
+    from_str = now_vn.strftime("00:00 %d/%m")
+    to_str = now_vn.strftime("%H:%M %d/%m")
     
     alerts = []
     seen_stations = set()
@@ -295,7 +296,85 @@ def fetch_kttv_rain_stations(min_rain=30.0):
         "has_warning": len(alerts) > 0,
         "count": len(alerts),
         "alerts": alerts,
-        "time_range": f"Từ 00:00 hôm nay đến {now_vn.strftime('%H:%M %d/%m')}",
+        "time_range": f"Từ {from_str} đến {to_str}",
+        "updated_at": updated_at
+    }
+
+
+def fetch_vrain_rain_stations(min_rain=30.0):
+    now_vn = datetime.utcnow() + timedelta(hours=7)
+    updated_at = now_vn.strftime("%H:%M:%S %d/%m/%Y")
+    
+    # Mốc 19:00 ngày hôm trước theo đúng DevTools: 19:00 23/08
+    from_dt = now_vn - timedelta(days=1) if now_vn.hour < 19 else now_vn
+    from_str = from_dt.strftime("19:00 %d/%m")
+    to_str = now_vn.strftime("%H:%M %d/%m")
+    
+    alerts = []
+    seen_stations = set()
+
+    for group_id in [None, 33]:
+        try:
+            params = {
+                "from": from_str, 
+                "to": to_str, 
+                "_t": int(time.time() * 1000)
+            }
+            if group_id:
+                params["groupID"] = group_id
+
+            res = requests.get(VRAIN_SUMMARY_URL, params=params, headers=HEADERS_DEFAULT, timeout=12)
+            if res.status_code == 200:
+                raw_data = res.json()
+                
+                stats = []
+                if isinstance(raw_data, dict):
+                    for key, val in raw_data.items():
+                        if isinstance(val, list): stats.extend(val)
+                        elif isinstance(val, dict): stats.append(val)
+                    if not stats:
+                        stats = raw_data.get("stats") or raw_data.get("data") or []
+                elif isinstance(raw_data, list):
+                    stats = raw_data
+                
+                for st in stats:
+                    if not isinstance(st, dict): continue
+                    
+                    st_obj = st.get("station", st) if isinstance(st.get("station"), dict) else st
+                    city_id = str(st_obj.get("cityID", ""))
+                    city_name = str(st_obj.get("cityName", "") or st_obj.get("province", "") or st_obj.get("area") or st_obj.get("location") or "").lower()
+                    
+                    if not (city_id in ["27", "38"] or "thanh h" in city_name):
+                        continue
+
+                    try:
+                        rain_raw = st.get("sumDepth") if st.get("sumDepth") is not None else st_obj.get("sumDepth")
+                        if rain_raw is None: rain_raw = st.get("depth", 0)
+                        rain = float(rain_raw)
+                    except (ValueError, TypeError):
+                        rain = 0.0
+
+                    if rain >= min_rain:
+                        name = st_obj.get("name") or st_obj.get("stationName") or "Trạm không tên"
+                        st_key = name.strip().lower()
+                        
+                        if st_key not in seen_stations:
+                            seen_stations.add(st_key)
+                            alerts.append({
+                                "key": st_key,
+                                "name": name,
+                                "location": st_obj.get("area") or st_obj.get("location") or "Thanh Hóa",
+                                "rain": round(rain, 1)
+                            })
+        except Exception as e:
+            print(f"❌ Lỗi Vrain Summary: {e}")
+
+    alerts.sort(key=lambda x: x["rain"], reverse=True)
+    return {
+        "has_warning": len(alerts) > 0,
+        "count": len(alerts),
+        "alerts": alerts,
+        "time_range": f"Từ {from_str} đến {to_str}",
         "updated_at": updated_at
     }
 
