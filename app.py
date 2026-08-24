@@ -181,10 +181,16 @@ def find_stations_list(data):
                 if nested: return nested
     return []
 
+# ==================== PARSER VRAIN CHUẨN 100% (FIX LỖI 401 BỊ CHẶN) ====================
+
+# 🔴 QUAN TRỌNG: Dán Cookie lấy từ F12 (tab Network -> Request Headers -> cookie) vào đây:
+VRAIN_COOKIE = "_ga=GA1.1.43220944.1783145620; sid=61e50f07-8d77-4a34-af0d-0e0121ac775d" 
+
 def fetch_rain_from_vrain_api(group_id, referer_url, min_rain=30.0):
     now_vn = datetime.utcnow() + timedelta(hours=7)
     updated_at = now_vn.strftime("%H:%M:%S %d/%m/%Y")
     
+    # Text hiển thị khung giờ
     if group_id == 14:
         time_range_text = f"Từ 00:00 hôm nay đến {now_vn.strftime('%H:%M %d/%m')}"
         endpoint = "https://kttv.vrain.vn/api/vrain/private/v1/stats/summary"
@@ -193,36 +199,41 @@ def fetch_rain_from_vrain_api(group_id, referer_url, min_rain=30.0):
         time_range_text = f"Từ 19:00 {from_dt.strftime('%d/%m')} đến {now_vn.strftime('%H:%M %d/%m')}"
         endpoint = "https://vrain.vn/api/vrain/private/v1/stats/summary"
 
+    # Header tĩnh bắt buộc (Phải có Cookie thì Vrain mới không chặn)
     headers = {
         'accept': 'application/json, text/plain, */*',
         'user-agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
         'x-org-uuid': '10a99a95-be60-4644-bbac-f43971302194',
-        'referer': referer_url
+        'referer': referer_url,
+        'cookie': VRAIN_COOKIE
     }
-
+    
     alerts = []
     seen_stations = set()
-    debug_text = ""
 
     try:
-        # Thử GET (có gửi kèm groupId)
-        res = requests.get(endpoint, params={"groupId": group_id}, headers=headers, timeout=12)
+        # Gọi thẳng API bằng requests.get (Không truyền params rườm rà)
+        res = requests.get(endpoint, headers=headers, timeout=12)
         
-        # Nếu GET thất bại hoặc rỗng, quay xe dùng POST
-        if res.status_code != 200 or not res.text.strip() or res.text.strip() == "[]":
-            res = requests.post(endpoint, json={"groupId": group_id}, headers=headers, timeout=12)
-
         if res.status_code == 200:
             raw_data = res.json()
-            debug_text = str(raw_data)[:800] # LƯU 800 KÝ TỰ ĐỂ BÁO CÁO TELEGRAM
             
-            stats = find_stations_list(raw_data)
-            if not stats and isinstance(raw_data, dict):
-                stats = [raw_data]
+            # Đưa JSON về dạng list chuẩn
+            stats = []
+            if isinstance(raw_data, list):
+                stats = raw_data
+            elif isinstance(raw_data, dict):
+                for k, v in raw_data.items():
+                    if isinstance(v, list):
+                        stats.extend(v)
+                if not stats:
+                    stats = [raw_data]
 
             for st in stats:
-                if not isinstance(st, dict): continue
+                if not isinstance(st, dict): 
+                    continue
 
+                # Bắt đúng tên và lượng mưa theo ảnh F12
                 name = str(st.get("stationName") or st.get("name") or "").strip()
                 area = str(st.get("area") or st.get("stationLocation") or "Thanh Hóa").strip()
 
@@ -230,12 +241,12 @@ def fetch_rain_from_vrain_api(group_id, referer_url, min_rain=30.0):
                     continue
 
                 try:
-                    rain_val = st.get("sumDepth")
-                    if rain_val is None: rain_val = st.get("depth", 0.0)
+                    rain_val = st.get("sumDepth") if st.get("sumDepth") is not None else st.get("depth", 0.0)
                     rain = float(rain_val)
-                except:
+                except (ValueError, TypeError):
                     rain = 0.0
 
+                # Lọc trạm từ 30mm trở lên
                 if rain >= min_rain:
                     st_key = name.lower()
                     if st_key not in seen_stations:
@@ -247,20 +258,20 @@ def fetch_rain_from_vrain_api(group_id, referer_url, min_rain=30.0):
                             "rain": round(rain, 1)
                         })
         else:
-            debug_text = f"API LỖI HTTP {res.status_code}: {res.text[:300]}"
+            # NẾU IN RA LỖI 401 TỨC LÀ COOKIE BỊ HẾT HẠN, BẠN CẦN VÀO F12 LẤY LẠI COOKIE MỚI!
+            print(f"⚠️ LỖI HTTP {res.status_code} TỪ VRAIN - Khả năng cao Cookie đã hết hạn!")
     except Exception as e:
-        debug_text = f"CODE LỖI EXCEPTION: {str(e)}"
+        print(f"❌ Lỗi fetch Vrain: {e}")
 
     alerts.sort(key=lambda x: x["rain"], reverse=True)
+    
     return {
         "has_warning": len(alerts) > 0,
         "count": len(alerts),
         "alerts": alerts,
         "time_range": time_range_text,
-        "updated_at": updated_at,
-        "debug_info": debug_text
+        "updated_at": updated_at
     }
-
 def fetch_vrain_rain_stations(min_rain=30.0):
     return fetch_rain_from_vrain_api(group_id=33, referer_url="https://vrain.vn/home/33/overview", min_rain=min_rain)
 
