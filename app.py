@@ -7,6 +7,7 @@ import urllib3
 import threading
 from datetime import datetime, timedelta
 from flask import Flask, request, jsonify
+from bs4 import BeautifulSoup
 
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
@@ -183,85 +184,85 @@ def find_stations_list(data):
 
 # ==================== PARSER VRAIN CHUẨN CURL (FIX LỖI RỖNG DO PARAMS) ====================
 
-# 🔴 Dán Cookie mới nhất từ trình duyệt vào đây
-VRAIN_COOKIE = "_ga=GA1.1.43220944.1783145620; sid=61e50f07-8d77-4a34-af0d-0e0121ac775d"
-
 def fetch_rain_from_vrain_api(is_kttv=False, min_rain=30.0):
     now_vn = datetime.utcnow() + timedelta(hours=7)
     updated_at = now_vn.strftime("%H:%M:%S %d/%m/%Y")
     
     if is_kttv:
-        endpoint = "https://kttv.vrain.vn/api/vrain/private/v1/stats/summary"
-        referer = "https://kttv.vrain.vn/home/14/overview"
-        # Lưu ý: Có thể KTTV dùng UUID khác. Nếu lỗi, bạn sang F12 trang KTTV lấy lại UUID
-        org_uuid = "10a99a95-be60-4644-bbac-f43971302194" 
+        url = "https://kttv.vrain.vn/home/14/overview"
     else:
-        endpoint = "https://vrain.vn/api/vrain/private/v1/stats/summary"
-        referer = "https://vrain.vn/home/33/overview"
-        org_uuid = "10a99a95-be60-4644-bbac-f43971302194"
+        url = "https://vrain.vn/home/33/overview"
 
     headers = {
-        'accept': 'application/json, text/plain, */*',
-        'user-agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-        'x-org-uuid': org_uuid,
-        'referer': referer,
-        'cookie': VRAIN_COOKIE
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+        'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8'
     }
     
     alerts = []
     seen_stations = set()
-    time_range_text = "Tự động lấy theo Vrain"
+    time_range_text = f"Cập nhật lúc {now_vn.strftime('%H:%M %d/%m')}"
 
     try:
-        # GỌI API THUẦN TÚY (KHÔNG TRUYỀN PARAMS)
-        res = requests.get(endpoint, headers=headers, timeout=12)
+        # Tải trực tiếp mã nguồn HTML của trang web
+        res = requests.get(url, headers=headers, timeout=15)
         
         if res.status_code == 200:
-            stats = res.json()
+            soup = BeautifulSoup(res.text, 'html.parser')
             
-            # Đưa JSON về dạng mảng an toàn
-            if isinstance(stats, dict) and "data" in stats:
-                stats = stats["data"]
-            if not isinstance(stats, list):
-                stats = [stats] if isinstance(stats, dict) else []
-
-            for st in stats:
-                if not isinstance(st, dict): 
-                    continue
-
-                # Cập nhật khung giờ hiển thị thực tế từ Vrain
-                if time_range_text == "Tự động lấy theo Vrain" and st.get("from") and st.get("to"):
-                    time_range_text = f"Từ {st.get('from')} đến {st.get('to')}"
-
-                # Lấy tên và vị trí trạm
-                name = str(st.get("stationName") or st.get("name") or "").strip()
-                area = str(st.get("area") or st.get("stationLocation") or "Thanh Hóa").strip()
-
-                if not name or name == "Trạm không tên":
-                    continue
-
-                # Lấy lượng mưa tích lũy
+            # Quét tất cả các khối chứa thông tin trạm trên trang overview
+            # (Thường giao diện React/Vue của Vrain render tên trạm và số mm trong các thẻ có cấu trúc chung)
+            # Dưới đây là cách quét tìm các thẻ có chứa định dạng "mm" hoặc cấu trúc trạm thông dụng:
+            
+            # Tìm tất cả các text hoặc phần tử số liệu mưa trên trang
+            # Do trang render bằng JS động, nếu requests thuần không lấy được thẻ nội dung, 
+            # chúng ta sẽ trích xuất thông qua regex trực tiếp trong toàn bộ mã HTML nguồn:
+            
+            # Quét tìm các mẫu dữ liệu trạm dạng JSON hoặc text được nhúng sẵn trong trang HTML (nếu có)
+            import re
+            # Tìm kiếm các chuỗi chứa tên trạm và số đo mm trong script hoặc DOM
+            text_content = soup.get_text()
+            
+            # Hoặc quét các phần tử hiển thị trực tiếp trên giao diện overview
+            # Thử tìm các thẻ div/span hiển thị giá trị mưa (thường kết thúc bằng " mm")
+            rain_elements = soup.find_all(string=re.compile(r'\d+(\.\d+)?\s*mm', re.IGNORECASE))
+            
+            for el in rain_elements:
                 try:
-                    rain_val = st.get("sumDepth") if st.get("sumDepth") is not None else st.get("depth", 0.0)
-                    rain = float(rain_val)
-                except (ValueError, TypeError):
-                    rain = 0.0
-
-                # Lọc trạm theo ngưỡng
-                if rain >= min_rain:
-                    st_key = name.lower()
-                    if st_key not in seen_stations:
-                        seen_stations.add(st_key)
-                        alerts.append({
-                            "key": st_key,
-                            "name": name,
-                            "location": area,
-                            "rain": round(rain, 1)
-                        })
+                    rain_str = re.search(r'([\d.]+)\s*mm', el, re.IGNORECASE).group(1)
+                    rain = float(rain_str)
+                    
+                    if rain >= min_rain:
+                        # Lấy phần tử cha xung quanh để dò tìm tên trạm
+                        parent = el.parent
+                        station_name = "Trạm tự động"
+                        location = "Thanh Hóa"
+                        
+                        # Dò ngược lên các thẻ cha để tìm tên trạm hiển thị gần nhất
+                        for _ in range(3):
+                            if parent:
+                                text_block = parent.get_text(separator=" | ", strip=True)
+                                # Tách lấy dòng có chứa tên trạm
+                                parts = text_block.split('|')
+                                if len(parts) > 1:
+                                    station_name = parts[0].strip()
+                                    break
+                                parent = parent.parent
+                        
+                        st_key = station_name.lower()
+                        if st_key not in seen_stations and len(station_name) < 50:
+                            seen_stations.add(st_key)
+                            alerts.append({
+                                "key": st_key,
+                                "name": station_name,
+                                "location": location,
+                                "rain": round(rain, 1)
+                            })
+                except Exception:
+                    continue
         else:
-            print(f"⚠️ Vrain API Trả về lỗi HTTP: {res.status_code}")
+            print(f"⚠️ Không thể truy cập trang web Vrain: {res.status_code}")
     except Exception as e:
-        print(f"❌ Lỗi fetch Vrain: {e}")
+        print(f"❌ Lỗi Scraping Vrain: {e}")
 
     alerts.sort(key=lambda x: x["rain"], reverse=True)
     
@@ -278,7 +279,6 @@ def fetch_vrain_rain_stations(min_rain=30.0):
 
 def fetch_kttv_rain_stations(min_rain=30.0):
     return fetch_rain_from_vrain_api(is_kttv=True, min_rain=min_rain)
-
 # ==================== TRẠM IOT, DÔNG SÉT, VNDMS, SẠT LỞ ====================
 def get_station_status():
     now_vn = datetime.utcnow() + timedelta(hours=7)
