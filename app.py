@@ -226,7 +226,7 @@ def fetch_vrain_rain_stations(min_rain=30.0):
     return fetch_rain_from_vrain_endpoint(VRAIN_SUMMARY_URL, group_id=33, referer_url="https://vrain.vn/home/33/overview", min_rain=min_rain)
 
 def fetch_kttv_rain_stations(min_rain=30.0):
-    return fetch_rain_from_vrain_endpoint(KTTV_SUMMARY_URL, group_id=14, referer_url="https://kttv.vrain.vn/home/14/overview", min_rain=min_rain)ain)
+    return fetch_rain_from_vrain_endpoint(KTTV_SUMMARY_URL, group_id=14, referer_url="https://kttv.vrain.vn/home/14/overview", min_rain=min_rain)
 # ==================== NGUỒN 1: VRAIN.VN ====================
 def fetch_vrain_rain_stations(min_rain=30.0):
     return fetch_rain_from_vrain_endpoint(VRAIN_SUMMARY_URL, group_id=33, min_rain=min_rain)
