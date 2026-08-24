@@ -232,7 +232,6 @@ def fetch_kttv_rain_stations(min_rain=30.0):
     now_vn = datetime.utcnow() + timedelta(hours=7)
     updated_at = now_vn.strftime("%H:%M:%S %d/%m/%Y")
     
-    # Format chuẩn đúng theo DevTools Vrain yêu cầu: HH:mm dd/MM
     from_str = now_vn.strftime("00:00 %d/%m")
     to_str = now_vn.strftime("%H:%M %d/%m")
     
@@ -251,28 +250,25 @@ def fetch_kttv_rain_stations(min_rain=30.0):
         if res.status_code == 200:
             raw_data = res.json()
             
+            # Bóc tách linh hoạt mọi cấp JSON trả về từ API KTTV
             stats = []
             if isinstance(raw_data, dict):
-                for key, val in raw_data.items():
+                for val in raw_data.values():
                     if isinstance(val, list): stats.extend(val)
                     elif isinstance(val, dict): stats.append(val)
                 if not stats:
-                    stats = raw_data.get("stats") or raw_data.get("data") or []
+                    stats = raw_data.get("stats") or raw_data.get("data") or raw_data.get("stations") or []
             elif isinstance(raw_data, list):
                 stats = raw_data
 
             for st in stats:
                 if not isinstance(st, dict): continue
                 
-                city_id = str(st.get("cityID", ""))
-                city_name = str(st.get("cityName", "") or st.get("province", "") or "").lower()
-                
-                if not (city_id == "27" or "thanh h" in city_name):
-                    continue
-                    
+                # Bóc tách tên trạm và địa bàn
                 st_name = st.get("stationName") or st.get("name") or "Trạm không tên"
                 st_key = st_name.strip().lower()
 
+                # Bắt chính xác trường sumDepth (Tổng mưa tích lũy)
                 try:
                     rain_raw = st.get("sumDepth")
                     if rain_raw is None: rain_raw = st.get("depth", 0)
@@ -285,7 +281,7 @@ def fetch_kttv_rain_stations(min_rain=30.0):
                     alerts.append({
                         "key": st_key,
                         "name": st_name,
-                        "location": st.get("stationLocation") or st.get("area") or "Thanh Hóa",
+                        "location": st.get("stationLocation") or st.get("area") or st.get("cityName") or "Bắc Trung Bộ",
                         "rain": round(rain_total, 1)
                     })
     except Exception as e:
@@ -300,6 +296,75 @@ def fetch_kttv_rain_stations(min_rain=30.0):
         "updated_at": updated_at
     }
 
+
+def fetch_vrain_rain_stations(min_rain=30.0):
+    now_vn = datetime.utcnow() + timedelta(hours=7)
+    updated_at = now_vn.strftime("%H:%M:%S %d/%m/%Y")
+    
+    from_dt = now_vn - timedelta(days=1) if now_vn.hour < 19 else now_vn
+    from_str = from_dt.strftime("19:00 %d/%m")
+    to_str = now_vn.strftime("%H:%M %d/%m")
+    
+    alerts = []
+    seen_stations = set()
+
+    for group_id in [None, 33]:
+        try:
+            params = {
+                "from": from_str, 
+                "to": to_str, 
+                "_t": int(time.time() * 1000)
+            }
+            if group_id:
+                params["groupID"] = group_id
+
+            res = requests.get(VRAIN_SUMMARY_URL, params=params, headers=HEADERS_DEFAULT, timeout=12)
+            if res.status_code == 200:
+                raw_data = res.json()
+                
+                stats = []
+                if isinstance(raw_data, dict):
+                    for val in raw_data.values():
+                        if isinstance(val, list): stats.extend(val)
+                        elif isinstance(val, dict): stats.append(val)
+                    if not stats:
+                        stats = raw_data.get("stats") or raw_data.get("data") or raw_data.get("stations") or []
+                elif isinstance(raw_data, list):
+                    stats = raw_data
+                
+                for st in stats:
+                    if not isinstance(st, dict): continue
+                    
+                    st_obj = st.get("station", st) if isinstance(st.get("station"), dict) else st
+                    name = st_obj.get("name") or st_obj.get("stationName") or "Trạm không tên"
+                    st_key = name.strip().lower()
+
+                    try:
+                        rain_raw = st.get("sumDepth") if st.get("sumDepth") is not None else st_obj.get("sumDepth")
+                        if rain_raw is None: rain_raw = st.get("depth", 0)
+                        rain = float(rain_raw)
+                    except (ValueError, TypeError):
+                        rain = 0.0
+
+                    if rain >= min_rain and st_key not in seen_stations:
+                        seen_stations.add(st_key)
+                        alerts.append({
+                            "key": st_key,
+                            "name": name,
+                            "location": st_obj.get("area") or st_obj.get("location") or "Thanh Hóa",
+                            "rain": round(rain, 1)
+                        })
+        except Exception as e:
+            print(f"❌ Lỗi Vrain Summary: {e}")
+
+    alerts.sort(key=lambda x: x["rain"], reverse=True)
+    return {
+        "has_warning": len(alerts) > 0,
+        "count": len(alerts),
+        "alerts": alerts,
+        "time_range": f"Từ {from_str} đến {to_str}",
+        "updated_at": updated_at
+    }
 
 def fetch_vrain_rain_stations(min_rain=30.0):
     now_vn = datetime.utcnow() + timedelta(hours=7)
