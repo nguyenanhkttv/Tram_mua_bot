@@ -13,8 +13,6 @@ urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 # ==================== CẤU HÌNH API ====================
 IWEATHER_STORM_URL = "https://iweather.gov.vn/product/warningstorm?token=null"
 VNDMS_WARNING_URL = "https://vndms.gov.vn/EventDisaster/WarningEvent"
-VRAIN_SUMMARY_URL = "https://vrain.vn/api/vrain/private/v1/stats/summary"
-KTTV_SUMMARY_URL = "https://kttv.vrain.vn/api/vrain/private/v1/stats/summary"
 NCHMF_CANHBAO_URL = "https://luquetsatlo.nchmf.gov.vn/LayerMapBox/getDSCanhbaoSLLQ"
 
 IOT_STATION_URL = os.environ.get("IOT_STATION_URL", "http://iot.vientnmt.com:8888/api/DataAPI/ReadDeviceUser")
@@ -25,23 +23,6 @@ TELEGRAM_API_URL = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}"
 
 HEADERS_DEFAULT = {
     'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
-}
-
-HEADERS_VRAIN = {
-    'accept': 'application/json, text/plain, */*',
-    'accept-language': 'vi-VN,vi;q=0.9,en-US;q=0.6,en;q=0.5',
-    'cache-control': 'no-cache',
-    'pragma': 'no-cache',
-    'cookie': '_ga=GA1.1.43220944.1783145620; sid=61e50f07-8d77-4a34-af0d-0e0121ac775d',  # Bổ sung Cookie sid từ F12
-    'sec-ch-ua': '"Not=A?Brand";v="99", "Google Chrome";v="151", "Chromium";v="151"',
-    'sec-ch-ua-mobile': '?0',
-    'sec-ch-ua-platform': '"Windows"',
-    'sec-fetch-dest': 'empty',
-    'sec-fetch-mode': 'cors',
-    'sec-fetch-site': 'same-origin',
-    'user-agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/151.0.0.0 Safari/537.36',
-    'x-org-uuid': '10a99a95-be60-4644-bbac-f43971302194',
-    'x-vrain-user-agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/151.0.0.0 Safari/537.36'
 }
 
 MAX_MSG_LEN = 3800
@@ -145,7 +126,6 @@ def check_rain_alert_level(st_key, rain, stage_dict):
 
     return should_alert, alert_tag
 
-# ==================== HÀM FORMAT BÁO CÁO PHÂN KHÚC ====================
 def format_rain_segmented_message(title, source_link, data):
     msg = f"🚨 <b>[CẢNH BÁO MƯA VƯỢT NGƯỠNG - {title.upper()}]</b>\n"
     msg += f"🕒 <i>Cập nhật:</i> <code>{data['updated_at']}</code>\n"
@@ -185,66 +165,65 @@ def format_rain_segmented_message(title, source_link, data):
 
     return msg
 
-# ==================== PARSER VRAIN CHUẨN 100% (FIX LỖI RỖNG) ====================
-# ==================== PARSER VRAIN CHUẨN 100% (FIX LỖI 401 RENDER) ====================
+# ==================== PARSER VRAIN SIÊU BẮT LỖI (DEBUG MODE) ====================
+def find_stations_list(data):
+    """Hàm đệ quy bới tung JSON để tìm mảng chứa dữ liệu trạm"""
+    if isinstance(data, list): return data
+    if isinstance(data, dict):
+        # Quét các key phổ biến
+        for key in ["stations", "data", "stats", "result"]:
+            if key in data and isinstance(data[key], list): return data[key]
+        # Quét sâu vào các value
+        for v in data.values():
+            if isinstance(v, list): return v
+            if isinstance(v, dict):
+                nested = find_stations_list(v)
+                if nested: return nested
+    return []
+
 def fetch_rain_from_vrain_api(group_id, referer_url, min_rain=30.0):
     now_vn = datetime.utcnow() + timedelta(hours=7)
     updated_at = now_vn.strftime("%H:%M:%S %d/%m/%Y")
     
     if group_id == 14:
-        from_str = now_vn.strftime("%Y-%m-%d 00:00:00")
         time_range_text = f"Từ 00:00 hôm nay đến {now_vn.strftime('%H:%M %d/%m')}"
         endpoint = "https://kttv.vrain.vn/api/vrain/private/v1/stats/summary"
     else:
         from_dt = now_vn - timedelta(days=1) if now_vn.hour < 19 else now_vn
-        from_str = from_dt.strftime("%Y-%m-%d 19:00:00")
         time_range_text = f"Từ 19:00 {from_dt.strftime('%d/%m')} đến {now_vn.strftime('%H:%M %d/%m')}"
         endpoint = "https://vrain.vn/api/vrain/private/v1/stats/summary"
 
-    to_str = now_vn.strftime("%Y-%m-%d %H:%M:%S")
-    
-    # BẮT BUỘC: Gắn Cookie sid và x-vrain-user-agent để Render không bị chặn 401
     headers = {
         'accept': 'application/json, text/plain, */*',
         'user-agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
         'x-org-uuid': '10a99a95-be60-4644-bbac-f43971302194',
-        'x-vrain-user-agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-        'cookie': 'sid=61e50f07-8d77-4a34-af0d-0e0121ac775d',  # Chìa khóa vượt 401 lấy từ cURL của bạn
         'referer': referer_url
-    }
-    
-    # BẮT BUỘC: Truyền đúng key 'groupId' để API biết cần tính giờ cho nhóm nào
-    params = {
-        "groupId": group_id,
-        "from": from_str,
-        "to": to_str
     }
 
     alerts = []
     seen_stations = set()
+    debug_text = ""
 
     try:
-        # Gửi request thẳng bằng thư viện requests cơ bản (Kèm Params + Headers)
-        res = requests.get(endpoint, params=params, headers=headers, timeout=12)
+        # Thử GET (có gửi kèm groupId)
+        res = requests.get(endpoint, params={"groupId": group_id}, headers=headers, timeout=12)
         
+        # Nếu GET thất bại hoặc rỗng, quay xe dùng POST
+        if res.status_code != 200 or not res.text.strip() or res.text.strip() == "[]":
+            res = requests.post(endpoint, json={"groupId": group_id}, headers=headers, timeout=12)
+
         if res.status_code == 200:
             raw_data = res.json()
+            debug_text = str(raw_data)[:800] # LƯU 800 KÝ TỰ ĐỂ BÁO CÁO TELEGRAM
             
-            stats = []
-            if isinstance(raw_data, list):
-                stats = raw_data
-            elif isinstance(raw_data, dict):
-                for k, v in raw_data.items():
-                    if isinstance(v, list):
-                        stats.extend(v)
-                if not stats:
-                    stats = [raw_data]
+            stats = find_stations_list(raw_data)
+            if not stats and isinstance(raw_data, dict):
+                stats = [raw_data]
 
             for st in stats:
-                if not isinstance(st, dict): 
-                    continue
+                if not isinstance(st, dict): continue
 
-                name = str(st.get("stationName") or st.get("name") or "Trạm không tên").strip()
+                name = str(st.get("stationName") or st.get("name") or "").strip()
                 area = str(st.get("area") or st.get("stationLocation") or "Thanh Hóa").strip()
 
                 if not name or name == "Trạm không tên":
@@ -252,10 +231,9 @@ def fetch_rain_from_vrain_api(group_id, referer_url, min_rain=30.0):
 
                 try:
                     rain_val = st.get("sumDepth")
-                    if rain_val is None:
-                        rain_val = st.get("depth", 0.0)
+                    if rain_val is None: rain_val = st.get("depth", 0.0)
                     rain = float(rain_val)
-                except (ValueError, TypeError):
+                except:
                     rain = 0.0
 
                 if rain >= min_rain:
@@ -269,18 +247,18 @@ def fetch_rain_from_vrain_api(group_id, referer_url, min_rain=30.0):
                             "rain": round(rain, 1)
                         })
         else:
-            print(f"⚠️ Vrain API Trả về lỗi HTTP: {res.status_code}")
+            debug_text = f"API LỖI HTTP {res.status_code}: {res.text[:300]}"
     except Exception as e:
-        print(f"❌ Lỗi fetch Vrain: {e}")
+        debug_text = f"CODE LỖI EXCEPTION: {str(e)}"
 
     alerts.sort(key=lambda x: x["rain"], reverse=True)
-    
     return {
         "has_warning": len(alerts) > 0,
         "count": len(alerts),
         "alerts": alerts,
         "time_range": time_range_text,
-        "updated_at": updated_at
+        "updated_at": updated_at,
+        "debug_info": debug_text
     }
 
 def fetch_vrain_rain_stations(min_rain=30.0):
@@ -288,54 +266,6 @@ def fetch_vrain_rain_stations(min_rain=30.0):
 
 def fetch_kttv_rain_stations(min_rain=30.0):
     return fetch_rain_from_vrain_api(group_id=14, referer_url="https://kttv.vrain.vn/home/14/overview", min_rain=min_rain)
-
-# ==================== LUỒNG THI CÔNG TỰ ĐỘNG ====================
-def run_rain_check_logic():
-    global SENT_VRAIN_STAGES, SENT_KTTV_STAGES
-    
-    # 1. Quét Vrain.vn
-    try:
-        vrain_data = fetch_vrain_rain_stations(min_rain=30.0)
-        if vrain_data.get("has_warning"):
-            alerts_to_send = []
-            for a in vrain_data['alerts']:
-                st_key = a['key']
-                rain = a['rain']
-                should_alert, alert_tag = check_rain_alert_level(st_key, rain, SENT_VRAIN_STAGES)
-                if should_alert:
-                    a_copy = dict(a)
-                    a_copy['tag'] = alert_tag
-                    alerts_to_send.append(a_copy)
-
-            if alerts_to_send:
-                v_copy = dict(vrain_data)
-                v_copy['alerts'] = alerts_to_send
-                v_copy['count'] = len(alerts_to_send)
-                broadcast_alert(format_rain_segmented_message("VRAIN CHUYÊN ĐỀ", "vrain.vn", v_copy))
-    except Exception as e:
-        print(f"❌ Lỗi quét Vrain: {e}")
-
-    # 2. Quét KTTV.vrain.vn
-    try:
-        kttv_data = fetch_kttv_rain_stations(min_rain=30.0)
-        if kttv_data.get("has_warning"):
-            alerts_to_send = []
-            for a in kttv_data['alerts']:
-                st_key = a['key']
-                rain = a['rain']
-                should_alert, alert_tag = check_rain_alert_level(st_key, rain, SENT_KTTV_STAGES)
-                if should_alert:
-                    a_copy = dict(a)
-                    a_copy['tag'] = alert_tag
-                    alerts_to_send.append(a_copy)
-
-            if alerts_to_send:
-                k_copy = dict(kttv_data)
-                k_copy['alerts'] = alerts_to_send
-                k_copy['count'] = len(alerts_to_send)
-                broadcast_alert(format_rain_segmented_message("KTTV NHÂN DÂN", "kttv.vrain.vn", k_copy))
-    except Exception as e:
-        print(f"❌ Lỗi quét KTTV: {e}")
 
 # ==================== TRẠM IOT, DÔNG SÉT, VNDMS, SẠT LỞ ====================
 def get_station_status():
@@ -527,6 +457,54 @@ def format_nchmf_message(data, is_auto=False):
         msg += f"{icon} <b>{idx}. Địa bàn: {item['xa_2cap']}</b> ({item['huyen']})\n   └ Lũ quét: <i>{item['lu_quet']}</i> | Sạt lở: <i>{item['sat_lo']}</i>\n\n"
     return msg
 
+# ==================== LUỒNG THI CÔNG TỰ ĐỘNG CẢNH BÁO MƯA ====================
+def run_rain_check_logic():
+    global SENT_VRAIN_STAGES, SENT_KTTV_STAGES
+    
+    # 1. Quét Vrain.vn
+    try:
+        vrain_data = fetch_vrain_rain_stations(min_rain=30.0)
+        if vrain_data.get("has_warning"):
+            alerts_to_send = []
+            for a in vrain_data['alerts']:
+                st_key = a['key']
+                rain = a['rain']
+                should_alert, alert_tag = check_rain_alert_level(st_key, rain, SENT_VRAIN_STAGES)
+                if should_alert:
+                    a_copy = dict(a)
+                    a_copy['tag'] = alert_tag
+                    alerts_to_send.append(a_copy)
+
+            if alerts_to_send:
+                v_copy = dict(vrain_data)
+                v_copy['alerts'] = alerts_to_send
+                v_copy['count'] = len(alerts_to_send)
+                broadcast_alert(format_rain_segmented_message("VRAIN CHUYÊN ĐỀ", "vrain.vn", v_copy))
+    except Exception as e:
+        print(f"❌ Lỗi quét Vrain logic: {e}")
+
+    # 2. Quét KTTV.vrain.vn
+    try:
+        kttv_data = fetch_kttv_rain_stations(min_rain=30.0)
+        if kttv_data.get("has_warning"):
+            alerts_to_send = []
+            for a in kttv_data['alerts']:
+                st_key = a['key']
+                rain = a['rain']
+                should_alert, alert_tag = check_rain_alert_level(st_key, rain, SENT_KTTV_STAGES)
+                if should_alert:
+                    a_copy = dict(a)
+                    a_copy['tag'] = alert_tag
+                    alerts_to_send.append(a_copy)
+
+            if alerts_to_send:
+                k_copy = dict(kttv_data)
+                k_copy['alerts'] = alerts_to_send
+                k_copy['count'] = len(alerts_to_send)
+                broadcast_alert(format_rain_segmented_message("KTTV NHÂN DÂN", "kttv.vrain.vn", k_copy))
+    except Exception as e:
+        print(f"❌ Lỗi quét KTTV logic: {e}")
+
 # ==================== LỆNH TELEGRAM ====================
 def process_user_command(chat_id, text_raw):
     cmd = text_raw.split()[0].split("@")[0].lower() if text_raw else ""
@@ -534,27 +512,35 @@ def process_user_command(chat_id, text_raw):
     if cmd in ["/tram", "/thietbi"]:
         st_data = get_station_status()
         send_telegram_message(chat_id, format_station_message(st_data))
+        
     elif cmd == "/vrain":
         vrain_data = fetch_vrain_rain_stations(min_rain=30.0)
         if vrain_data.get("has_warning"):
             send_telegram_message(chat_id, format_rain_segmented_message("VRAIN CHUYÊN ĐỀ", "vrain.vn", vrain_data))
         else:
-            send_telegram_message(chat_id, f"🌧️ <b>[GIÁM SÁT MƯA VRAIN.VN THANH HÓA]</b>\n\n✅ Chưa có trạm Vrain nào đạt ngưỡng 30mm.")
+            debug_msg = f"🌧️ <b>[GIÁM SÁT MƯA VRAIN.VN THANH HÓA]</b>\n\n✅ Chưa có trạm Vrain nào đạt ngưỡng 30mm.\n\n🛠 <b>DỮ LIỆU GỐC TRẢ VỀ TỪ VRAIN ĐỂ SOÁT LỖI:</b>\n<code>{vrain_data.get('debug_info', 'Rỗng')}</code>"
+            send_telegram_message(chat_id, debug_msg)
+            
     elif cmd == "/nhandan":
         kttv_data = fetch_kttv_rain_stations(min_rain=30.0)
         if kttv_data.get("has_warning"):
             send_telegram_message(chat_id, format_rain_segmented_message("KTTV NHÂN DÂN", "kttv.vrain.vn", kttv_data))
         else:
-            send_telegram_message(chat_id, f"🌧️ <b>[GIÁM SÁT MƯA TRẠM NHÂN DÂN / KTTV THANH HÓA]</b>\n\n✅ Chưa có trạm nhân dân/KTTV nào đạt ngưỡng 30mm.")
+            debug_msg = f"🌧️ <b>[GIÁM SÁT MƯA TRẠM NHÂN DÂN / KTTV THANH HÓA]</b>\n\n✅ Chưa có trạm nhân dân/KTTV nào đạt ngưỡng 30mm.\n\n🛠 <b>DỮ LIỆU GỐC TRẢ VỀ TỪ VRAIN ĐỂ SOÁT LỖI:</b>\n<code>{kttv_data.get('debug_info', 'Rỗng')}</code>"
+            send_telegram_message(chat_id, debug_msg)
+            
     elif cmd == "/dong":
         iweather_data = get_iweather_storm_warning("Thanh Hóa")
         send_telegram_message(chat_id, format_iweather_message(iweather_data, is_auto=False))
+        
     elif cmd in ["/thientai", "/canhbao"]:
         vndms_data = get_vndms_warning()
         send_telegram_message(chat_id, format_vndms_message(vndms_data, is_auto=False))
+        
     elif cmd in ["/luquet", "/satlo"]:
         landslide_data = get_nchmf_landslide_warning()
         send_telegram_message(chat_id, format_nchmf_message(landslide_data, is_auto=False))
+        
     elif cmd in ["/start", "/tong", "/thoitiet"]:
         st_data = get_station_status()
         vrain_data = fetch_vrain_rain_stations(min_rain=30.0)
