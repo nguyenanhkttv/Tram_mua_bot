@@ -185,68 +185,67 @@ def format_rain_segmented_message(title, source_link, data):
 
     return msg
 
-# ==================== PARSER VRAIN TỐI ƯU THEO DEVTOOLS ====================
-# ==================== PARSER VRAIN CHUẨN 100% THEO F12 ====================
+# ==================== PARSER VRAIN CHUẨN 100% (FIX LỖI RỖNG) ====================
 def fetch_rain_from_vrain_api(group_id, referer_url, min_rain=30.0):
     now_vn = datetime.utcnow() + timedelta(hours=7)
     updated_at = now_vn.strftime("%H:%M:%S %d/%m/%Y")
     
+    # Text hiển thị khung giờ (API tự động xuất dữ liệu theo giờ này)
     if group_id == 14:
-        from_str = now_vn.strftime("%Y-%m-%d 00:00:00")
         time_range_text = f"Từ 00:00 hôm nay đến {now_vn.strftime('%H:%M %d/%m')}"
-        endpoint = KTTV_SUMMARY_URL
+        endpoint = "https://kttv.vrain.vn/api/vrain/private/v1/stats/summary"
     else:
         from_dt = now_vn - timedelta(days=1) if now_vn.hour < 19 else now_vn
-        from_str = from_dt.strftime("%Y-%m-%d 19:00:00")
         time_range_text = f"Từ 19:00 {from_dt.strftime('%d/%m')} đến {now_vn.strftime('%H:%M %d/%m')}"
-        endpoint = VRAIN_SUMMARY_URL
+        endpoint = "https://vrain.vn/api/vrain/private/v1/stats/summary"
 
-    to_str = now_vn.strftime("%Y-%m-%d %H:%M:%S")
-    
+    # Tạo Session để lấy Cookie thật từ trang chủ, chống lỗi 401 Unauthorized
     session = requests.Session()
-    session.headers.update({**HEADERS_VRAIN, 'referer': referer_url})
+    session.headers.update({
+        'accept': 'application/json, text/plain, */*',
+        'user-agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+        'x-org-uuid': '10a99a95-be60-4644-bbac-f43971302194',
+        'referer': referer_url
+    })
     
-    params = {
-        "groupID": group_id,
-        "from": from_str,
-        "to": to_str,
-        "_t": int(time.time() * 1000)
-    }
-
     alerts = []
     seen_stations = set()
 
     try:
-        session.get(referer_url, timeout=5)
-        res = session.get(endpoint, params=params, timeout=12)
+        # Nhá 1 request nhẹ để lưu Cookie động
+        try: session.get(referer_url, timeout=5) 
+        except: pass
+
+        # Gọi API chính diện (KHÔNG DÙNG PARAMS ĐỂ TRÁNH BỊ VRAIN CHẶN)
+        res = session.get(endpoint, timeout=12)
         
         if res.status_code == 200:
             raw_data = res.json()
             
+            # Quét tìm mảng chứa dữ liệu trạm
             stats = []
             if isinstance(raw_data, list):
                 stats = raw_data
             elif isinstance(raw_data, dict):
-                stats = raw_data.get("stations") or raw_data.get("data") or raw_data.get("stats") or []
+                # Linh hoạt quét tất cả các value để tìm mảng
+                for k, v in raw_data.items():
+                    if isinstance(v, list):
+                        stats.extend(v)
+                if not stats:
+                    stats = [raw_data] # Dự phòng nó không bọc trong mảng
 
             for st in stats:
                 if not isinstance(st, dict): 
                     continue
 
-                # 1. Bắt đúng Key Tỉnh Thanh Hóa (cityID = 27)
-                city_id = str(st.get("cityID", ""))
-                city_name = str(st.get("cityName", "")).lower()
-                if city_id != "27" and "thanh h" not in city_name:
-                    continue
-
-                # 2. Bắt đúng Key Tên trạm và Khu vực
+                # 1. Bắt đúng tên trạm theo F12
                 name = str(st.get("stationName") or st.get("name") or "Trạm không tên").strip()
                 area = str(st.get("area") or st.get("stationLocation") or "Thanh Hóa").strip()
 
-                if not name:
+                if not name or name == "Trạm không tên":
                     continue
 
-                # 3. Bắt đúng Key Lượng mưa (sumDepth)
+                # 2. Bắt đúng lượng mưa theo F12
                 try:
                     rain_val = st.get("sumDepth")
                     if rain_val is None:
@@ -255,7 +254,7 @@ def fetch_rain_from_vrain_api(group_id, referer_url, min_rain=30.0):
                 except (ValueError, TypeError):
                     rain = 0.0
 
-                # 4. Lọc trạm đạt ngưỡng
+                # 3. Lọc trạm đạt ngưỡng (từ 30mm trở lên)
                 if rain >= min_rain:
                     st_key = name.lower()
                     if st_key not in seen_stations:
