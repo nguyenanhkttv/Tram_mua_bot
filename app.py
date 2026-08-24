@@ -134,8 +134,16 @@ def fetch_vrain_rain_stations(min_rain=30.0):
     
     url = "https://vrain.vn/api/vrain/private/v1/stats/summary"
     headers = {
+        'Host': 'vrain.vn',
+        'Connection': 'keep-alive',
+        'sec-ch-ua': '"Not_A Brand";v="8", "Chromium";v="120", "Google Chrome";v="120"',
+        'sec-ch-ua-mobile': '?0',
+        'sec-ch-ua-platform': '"Windows"',
+        'Upgrade-Insecure-Requests': '1',
         'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-        'Accept': 'application/json, text/plain, */*',
+        'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8',
+        'Accept-Encoding': 'gzip, deflate, br',
+        'Accept-Language': 'vi-VN,vi;q=0.9,en-US;q=0.6,en;q=0.5',
         'x-org-uuid': '10a99a95-be60-4644-bbac-f43971302194',
         'referer': 'https://vrain.vn/home/33/overview'
     }
@@ -146,6 +154,8 @@ def fetch_vrain_rain_stations(min_rain=30.0):
 
     try:
         res = requests.get(url, params=params, headers=headers, timeout=15)
+        print(f"DEBUG Vrain 33 Status: {res.status_code}")
+        
         if res.status_code == 200:
             raw_data = res.json()
             stats = []
@@ -170,6 +180,8 @@ def fetch_vrain_rain_stations(min_rain=30.0):
 
                 try:
                     rain_raw = st.get("sumDepth")
+                    if rain_raw is None:
+                        rain_raw = st_obj.get("sumDepth")
                     if rain_raw is None:
                         rain_raw = st.get("depth", 0)
                     rain_total = float(rain_raw)
@@ -214,6 +226,7 @@ def format_vrain_message(data):
     return msg
 
 # ==================== NGUỒN 2: KTTV BẮC TRUNG BỘ (groupID 14) ====================
+# ==================== NGUỒN 2: KTTV BẮC TRUNG BỘ (groupID 14) ====================
 def fetch_kttv_rain_stations(min_rain=30.0):
     now_vn = datetime.utcnow() + timedelta(hours=7)
     updated_at = now_vn.strftime("%H:%M:%S %d/%m/%Y")
@@ -221,8 +234,16 @@ def fetch_kttv_rain_stations(min_rain=30.0):
     
     url = "https://kttv.vrain.vn/api/vrain/private/v1/stats/summary"
     headers = {
+        'Host': 'kttv.vrain.vn',
+        'Connection': 'keep-alive',
+        'sec-ch-ua': '"Not_A Brand";v="8", "Chromium";v="120", "Google Chrome";v="120"',
+        'sec-ch-ua-mobile': '?0',
+        'sec-ch-ua-platform': '"Windows"',
+        'Upgrade-Insecure-Requests': '1',
         'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-        'Accept': 'application/json, text/plain, */*',
+        'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8',
+        'Accept-Encoding': 'gzip, deflate, br',
+        'Accept-Language': 'vi-VN,vi;q=0.9,en-US;q=0.6,en;q=0.5',
         'x-org-uuid': '10a99a95-be60-4644-bbac-f43971302194',
         'referer': 'https://kttv.vrain.vn/home/14/overview'
     }
@@ -233,6 +254,8 @@ def fetch_kttv_rain_stations(min_rain=30.0):
 
     try:
         res = requests.get(url, params=params, headers=headers, timeout=15)
+        print(f"DEBUG KTTV 14 Status: {res.status_code}")
+        
         if res.status_code == 200:
             raw_data = res.json()
             
