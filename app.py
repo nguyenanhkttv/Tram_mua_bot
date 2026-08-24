@@ -202,7 +202,6 @@ def fetch_rain_from_vrain_api(group_id, referer_url, min_rain=30.0):
 
     to_str = now_vn.strftime("%Y-%m-%d %H:%M:%S")
     
-    # Tạo session để giữ cookie tự động
     session = requests.Session()
     session.headers.update({**HEADERS_VRAIN, 'referer': referer_url})
     
@@ -217,28 +216,47 @@ def fetch_rain_from_vrain_api(group_id, referer_url, min_rain=30.0):
     seen_stations = set()
 
     try:
-        # Mồi 1 request nhẹ tới trang chủ để nhận Session Cookie từ Server Vrain
+        # Bắt buộc get referer để cập nhật cookie session tự động
         session.get(referer_url, timeout=5)
-        
-        # Gọi API chính thức
         res = session.get(endpoint, params=params, timeout=12)
         
         if res.status_code == 200:
             raw_data = res.json()
-            stats = raw_data if isinstance(raw_data, list) else (raw_data.get("stations") or raw_data.get("data") or raw_data.get("stats") or [])
+            
+            # Lấy mảng dữ liệu chính xác
+            stats = []
+            if isinstance(raw_data, list):
+                stats = raw_data
+            elif isinstance(raw_data, dict):
+                stats = raw_data.get("stations") or raw_data.get("data") or raw_data.get("stats") or raw_data.get("result") or []
 
             for st in stats:
                 if not isinstance(st, dict): 
                     continue
 
-                name = str(st.get("name") or "Trạm không tên").strip()
-                area = str(st.get("area") or "Thanh Hóa").strip()
-                
+                # 1. BÓC TÁCH OBJECT CON NẾU DỮ LIỆU LỒNG TRONG "station"
+                st_obj = st.get("station") if isinstance(st.get("station"), dict) else st
+
+                # 2. LẤY TÊN TRẠM VÀ KHU VỰC
+                name = str(st.get("name") or st_obj.get("name") or st.get("stationName") or st_obj.get("stationName") or "").strip()
+                area = str(st.get("area") or st_obj.get("area") or st.get("location") or st_obj.get("location") or "Thanh Hóa").strip()
+
+                if not name:
+                    continue
+
+                # 3. LẤY GIÁ TRỊ LƯỢNG MƯA AN TOÀN
+                rain_val = st.get("depth")
+                if rain_val is None:
+                    rain_val = st_obj.get("depth")
+                if rain_val is None:
+                    rain_val = st.get("sumDepth") or st_obj.get("sumDepth", 0)
+
                 try:
-                    rain = float(st.get("depth", 0.0))
+                    rain = float(rain_val)
                 except (ValueError, TypeError):
                     rain = 0.0
 
+                # 4. LỌC CÁC TRẠM ĐẠT VÀ VƯỢT NGƯỠNG
                 if rain >= min_rain:
                     st_key = name.lower()
                     if st_key not in seen_stations:
