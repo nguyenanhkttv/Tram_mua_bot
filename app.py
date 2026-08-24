@@ -181,88 +181,109 @@ def find_stations_list(data):
                 if nested: return nested
     return []
 
-# ==================== PARSER VRAIN CHUẨN 100% (FIX LỖI 401 BỊ CHẶN) ====================
+# ==================== PARSER VRAIN CHUẨN 100% (ÉP LẤY DỮ LIỆU) ====================
 
-# 🔴 QUAN TRỌNG: Dán Cookie lấy từ F12 (tab Network -> Request Headers -> cookie) vào đây:
-VRAIN_COOKIE = "_ga=GA1.1.43220944.1783145620; sid=61e50f07-8d77-4a34-af0d-0e0121ac775d" 
+# 🔴 QUAN TRỌNG: Đảm bảo Cookie này vẫn còn hạn sử dụng từ trình duyệt của bạn
+VRAIN_COOKIE = "_ga=GA1.1.43220944.1783145620; sid=61e50f07-8d77-4a34-af0d-0e0121ac775d"
 
 def fetch_rain_from_vrain_api(group_id, referer_url, min_rain=30.0):
     now_vn = datetime.utcnow() + timedelta(hours=7)
     updated_at = now_vn.strftime("%H:%M:%S %d/%m/%Y")
     
-    # Text hiển thị khung giờ
+    # Thiết lập mốc thời gian chuẩn xác
     if group_id == 14:
+        from_str = now_vn.strftime("%Y-%m-%d 00:00:00")
         time_range_text = f"Từ 00:00 hôm nay đến {now_vn.strftime('%H:%M %d/%m')}"
         endpoint = "https://kttv.vrain.vn/api/vrain/private/v1/stats/summary"
     else:
         from_dt = now_vn - timedelta(days=1) if now_vn.hour < 19 else now_vn
+        from_str = from_dt.strftime("%Y-%m-%d 19:00:00")
         time_range_text = f"Từ 19:00 {from_dt.strftime('%d/%m')} đến {now_vn.strftime('%H:%M %d/%m')}"
         endpoint = "https://vrain.vn/api/vrain/private/v1/stats/summary"
 
-    # Header tĩnh bắt buộc (Phải có Cookie thì Vrain mới không chặn)
+    to_str = now_vn.strftime("%Y-%m-%d %H:%M:%S")
+    
+    # Bắt buộc phải có các tham số này để Vrain biết cần lấy dữ liệu của Tỉnh nào, giờ nào
+    payload_params = {
+        "groupID": group_id,
+        "from": from_str,
+        "to": to_str
+    }
+
     headers = {
         'accept': 'application/json, text/plain, */*',
         'user-agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
         'x-org-uuid': '10a99a95-be60-4644-bbac-f43971302194',
         'referer': referer_url,
-        'cookie': VRAIN_COOKIE
+        'cookie': VRAIN_COOKIE,
+        'content-type': 'application/json'
     }
     
     alerts = []
     seen_stations = set()
 
     try:
-        # Gọi thẳng API bằng requests.get (Không truyền params rườm rà)
-        res = requests.get(endpoint, headers=headers, timeout=12)
+        # 1. Thử gọi bằng GET trước
+        res = requests.get(endpoint, params=payload_params, headers=headers, timeout=12)
+        raw_data = []
         
         if res.status_code == 200:
             raw_data = res.json()
             
-            # Đưa JSON về dạng list chuẩn
-            stats = []
-            if isinstance(raw_data, list):
-                stats = raw_data
-            elif isinstance(raw_data, dict):
-                for k, v in raw_data.items():
-                    if isinstance(v, list):
-                        stats.extend(v)
-                if not stats:
-                    stats = [raw_data]
+        # 2. Nếu GET trả về rỗng (như lỗi bạn vừa gặp), lập tức quay xe dùng POST
+        if not raw_data or (isinstance(raw_data, list) and len(raw_data) == 0):
+            res = requests.post(endpoint, json=payload_params, headers=headers, timeout=12)
+            if res.status_code == 200:
+                raw_data = res.json()
 
-            for st in stats:
-                if not isinstance(st, dict): 
-                    continue
+        # Quét tìm mảng chứa dữ liệu trạm
+        stats = []
+        if isinstance(raw_data, list):
+            stats = raw_data
+        elif isinstance(raw_data, dict):
+            for k, v in raw_data.items():
+                if isinstance(v, list):
+                    stats.extend(v)
+            if not stats:
+                stats = [raw_data]
 
-                # Bắt đúng tên và lượng mưa theo ảnh F12
-                name = str(st.get("stationName") or st.get("name") or "").strip()
-                area = str(st.get("area") or st.get("stationLocation") or "Thanh Hóa").strip()
+        # Vòng lặp bóc tách dữ liệu
+        for st in stats:
+            if not isinstance(st, dict): 
+                continue
 
-                if not name or name == "Trạm không tên":
-                    continue
+            # Bắt đúng tên trạm theo F12
+            name = str(st.get("stationName") or st.get("name") or "Trạm không tên").strip()
+            area = str(st.get("area") or st.get("stationLocation") or "Thanh Hóa").strip()
 
-                try:
-                    rain_val = st.get("sumDepth") if st.get("sumDepth") is not None else st.get("depth", 0.0)
-                    rain = float(rain_val)
-                except (ValueError, TypeError):
-                    rain = 0.0
+            if not name or name == "Trạm không tên":
+                continue
 
-                # Lọc trạm từ 30mm trở lên
-                if rain >= min_rain:
-                    st_key = name.lower()
-                    if st_key not in seen_stations:
-                        seen_stations.add(st_key)
-                        alerts.append({
-                            "key": st_key,
-                            "name": name,
-                            "location": area,
-                            "rain": round(rain, 1)
-                        })
-        else:
-            # NẾU IN RA LỖI 401 TỨC LÀ COOKIE BỊ HẾT HẠN, BẠN CẦN VÀO F12 LẤY LẠI COOKIE MỚI!
-            print(f"⚠️ LỖI HTTP {res.status_code} TỪ VRAIN - Khả năng cao Cookie đã hết hạn!")
+            # Bắt đúng lượng mưa (sumDepth)
+            try:
+                rain_val = st.get("sumDepth")
+                if rain_val is None:
+                    rain_val = st.get("depth", 0.0)
+                rain = float(rain_val)
+            except (ValueError, TypeError):
+                rain = 0.0
+
+            # Lọc trạm từ 30mm trở lên
+            if rain >= min_rain:
+                st_key = name.lower()
+                if st_key not in seen_stations:
+                    seen_stations.add(st_key)
+                    alerts.append({
+                        "key": st_key,
+                        "name": name,
+                        "location": area,
+                        "rain": round(rain, 1)
+                    })
+                    
     except Exception as e:
         print(f"❌ Lỗi fetch Vrain: {e}")
 
+    # Sắp xếp lượng mưa từ cao xuống thấp
     alerts.sort(key=lambda x: x["rain"], reverse=True)
     
     return {
