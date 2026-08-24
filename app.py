@@ -13,8 +13,8 @@ urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 # ==================== CẤU HÌNH API ====================
 IWEATHER_STORM_URL = "https://iweather.gov.vn/product/warningstorm?token=null"
 VNDMS_WARNING_URL = "https://vndms.gov.vn/EventDisaster/WarningEvent"
-VRAIN_SUMMARY_URL = "https://vrain.vn/api/v2/home/33/summary"
-KTTV_SUMMARY_URL = "https://vrain.vn/api/v2/home/14/summary"
+VVRAIN_SUMMARY_URL = "https://vrain.vn/api/vrain/private/v1/stats/summary"
+KTTV_SUMMARY_URL = "https://kttv.vrain.vn/api/vrain/private/v1/stats/summary"
 NCHMF_CANHBAO_URL = "https://luquetsatlo.nchmf.gov.vn/LayerMapBox/getDSCanhbaoSLLQ"
 
 IOT_STATION_URL = os.environ.get("IOT_STATION_URL", "http://iot.vientnmt.com:8888/api/DataAPI/ReadDeviceUser")
@@ -129,7 +129,7 @@ def check_rain_alert_level(st_key, rain, stage_dict):
     return should_alert, alert_tag
 
 # ==================== HÀM QUÉT MƯA CHUẨN XÁC DÙNG CHUNG ====================
-def fetch_rain_from_vrain_endpoint(api_url, group_id, min_rain=30.0):
+def fetch_rain_from_vrain_endpoint(api_url, group_id, referer_url, min_rain=30.0):
     now_vn = datetime.utcnow() + timedelta(hours=7)
     updated_at = now_vn.strftime("%H:%M:%S %d/%m/%Y")
     
@@ -139,37 +139,48 @@ def fetch_rain_from_vrain_endpoint(api_url, group_id, min_rain=30.0):
         from_dt = now_vn - timedelta(days=1) if now_vn.hour < 19 else now_vn
         time_range_text = f"Từ 19:00 {from_dt.strftime('%d/%m')} đến {now_vn.strftime('%H:%M %d/%m')}"
 
+    # Header bắt buộc có x-org-uuid và referer khớp với từng trang
+    headers = {
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+        'Accept': 'application/json, text/plain, */*',
+        'x-org-uuid': '10a99a95-be60-4644-bbac-f43971302194',
+        'referer': referer_url
+    }
+
+    params = {
+        "groupID": group_id,
+        "_t": int(time.time() * 1000)
+    }
+
     alerts = []
     seen_stations = set()
 
     try:
-        params = {"groupID": group_id, "_t": int(time.time() * 1000)}
-        res = requests.get(api_url, params=params, headers=HEADERS_DEFAULT, timeout=15)
+        res = requests.get(api_url, params=params, headers=headers, timeout=15)
         
         if res.status_code == 200:
             raw_data = res.json()
             
+            # Xử lý linh hoạt mọi cấu trúc JSON trả về (list hoặc dict bọc data/stats)
             stats = []
             if isinstance(raw_data, list):
                 stats = raw_data
             elif isinstance(raw_data, dict):
-                # Quét mọi key có thể chứa mảng dữ liệu trạm
-                for k, v in raw_data.items():
-                    if isinstance(v, list):
-                        stats.extend(v)
+                stats = raw_data.get("data") or raw_data.get("stations") or raw_data.get("stats") or []
                 if not stats:
-                    stats = raw_data.get("stats") or raw_data.get("data") or []
+                    for v in raw_data.values():
+                        if isinstance(v, list):
+                            stats.extend(v)
 
             for st in stats:
                 if not isinstance(st, dict):
                     continue
-                
+
                 # Lọc chuẩn tỉnh Thanh Hóa (cityID = 27 hoặc 38, hoặc tên chứa thanh hóa)
                 city_id = str(st.get("cityID", ""))
                 city_name = str(st.get("cityName", "") or st.get("province", "") or st.get("area", "")).lower()
                 
                 if not (city_id in ["27", "38"] or "thanh h" in city_name or "thanh hóa" in city_name):
-                    # Nếu API đã gom sẵn theo nhóm khu vực Thanh Hóa thì cho phép qua nếu có tên trạm hợp lệ
                     if not st.get("stationName") and not st.get("name"):
                         continue
 
@@ -196,7 +207,7 @@ def fetch_rain_from_vrain_endpoint(api_url, group_id, min_rain=30.0):
                             "rain": round(rain_total, 1)
                         })
         else:
-            print(f"⚠️ Lỗi HTTP từ Vrain API ({group_id}): {res.status_code}")
+            print(f"⚠️ Lỗi HTTP từ Vrain API (Group {group_id}): {res.status_code}")
     except Exception as e:
         print(f"❌ Lỗi fetch Vrain group {group_id}: {e}")
 
@@ -209,6 +220,12 @@ def fetch_rain_from_vrain_endpoint(api_url, group_id, min_rain=30.0):
         "updated_at": updated_at
     }
 
+# Định nghĩa 2 hàm gọi riêng cho 2 lệnh /vrain và /nhandan
+def fetch_vrain_rain_stations(min_rain=30.0):
+    return fetch_rain_from_vrain_endpoint(VRAIN_SUMMARY_URL, group_id=33, referer_url="https://vrain.vn/home/33/overview", min_rain=min_rain)
+
+def fetch_kttv_rain_stations(min_rain=30.0):
+    return fetch_rain_from_vrain_endpoint(KTTV_SUMMARY_URL, group_id=14, referer_url="https://kttv.vrain.vn/home/14/overview", min_rain=min_rain)
 # ==================== NGUỒN 1: VRAIN.VN ====================
 def fetch_vrain_rain_stations(min_rain=30.0):
     return fetch_rain_from_vrain_endpoint(VRAIN_SUMMARY_URL, group_id=33, min_rain=min_rain)
