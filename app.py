@@ -29,11 +29,19 @@ HEADERS_DEFAULT = {
 
 HEADERS_VRAIN = {
     'accept': 'application/json, text/plain, */*',
-    'user-agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-    'x-org-uuid': '10a99a95-be60-4644-bbac-f43971302194',
-    'x-vrain-user-agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+    'accept-language': 'vi-VN,vi;q=0.9,en-US;q=0.6,en;q=0.5',
     'cache-control': 'no-cache',
-    'pragma': 'no-cache'
+    'pragma': 'no-cache',
+    'cookie': '_ga=GA1.1.43220944.1783145620; sid=61e50f07-8d77-4a34-af0d-0e0121ac775d',  # Bổ sung Cookie sid từ F12
+    'sec-ch-ua': '"Not=A?Brand";v="99", "Google Chrome";v="151", "Chromium";v="151"',
+    'sec-ch-ua-mobile': '?0',
+    'sec-ch-ua-platform': '"Windows"',
+    'sec-fetch-dest': 'empty',
+    'sec-fetch-mode': 'cors',
+    'sec-fetch-site': 'same-origin',
+    'user-agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/151.0.0.0 Safari/537.36',
+    'x-org-uuid': '10a99a95-be60-4644-bbac-f43971302194',
+    'x-vrain-user-agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/151.0.0.0 Safari/537.36'
 }
 
 MAX_MSG_LEN = 3800
@@ -182,18 +190,21 @@ def fetch_rain_from_vrain_api(group_id, referer_url, min_rain=30.0):
     now_vn = datetime.utcnow() + timedelta(hours=7)
     updated_at = now_vn.strftime("%H:%M:%S %d/%m/%Y")
     
-    # Khung giờ tính lượng mưa chuẩn Vrain
     if group_id == 14:
         from_str = now_vn.strftime("%Y-%m-%d 00:00:00")
         time_range_text = f"Từ 00:00 hôm nay đến {now_vn.strftime('%H:%M %d/%m')}"
+        endpoint = KTTV_SUMMARY_URL
     else:
         from_dt = now_vn - timedelta(days=1) if now_vn.hour < 19 else now_vn
         from_str = from_dt.strftime("%Y-%m-%d 19:00:00")
         time_range_text = f"Từ 19:00 {from_dt.strftime('%d/%m')} đến {now_vn.strftime('%H:%M %d/%m')}"
-        
+        endpoint = VRAIN_SUMMARY_URL
+
     to_str = now_vn.strftime("%Y-%m-%d %H:%M:%S")
-    endpoint = KTTV_SUMMARY_URL if group_id == 14 else VRAIN_SUMMARY_URL
-    headers = {**HEADERS_VRAIN, 'referer': referer_url}
+    
+    # Tạo session để giữ cookie tự động
+    session = requests.Session()
+    session.headers.update({**HEADERS_VRAIN, 'referer': referer_url})
     
     params = {
         "groupID": group_id,
@@ -206,29 +217,25 @@ def fetch_rain_from_vrain_api(group_id, referer_url, min_rain=30.0):
     seen_stations = set()
 
     try:
-        res = requests.get(endpoint, params=params, headers=headers, timeout=12)
+        # Mồi 1 request nhẹ tới trang chủ để nhận Session Cookie từ Server Vrain
+        session.get(referer_url, timeout=5)
+        
+        # Gọi API chính thức
+        res = session.get(endpoint, params=params, timeout=12)
+        
         if res.status_code == 200:
             raw_data = res.json()
-            
-            # Xử lý linh hoạt tất cả các kiểu bọc mảng của Vrain
-            stats = []
-            if isinstance(raw_data, list):
-                stats = raw_data
-            elif isinstance(raw_data, dict):
-                stats = raw_data.get("stations") or raw_data.get("data") or raw_data.get("stats") or raw_data.get("result") or []
+            stats = raw_data if isinstance(raw_data, list) else (raw_data.get("stations") or raw_data.get("data") or raw_data.get("stats") or [])
 
             for st in stats:
                 if not isinstance(st, dict): 
                     continue
 
-                # Lấy tên trạm & khu vực
-                name = str(st.get("name") or st.get("stationName") or "Trạm không tên").strip()
-                area = str(st.get("area") or st.get("location") or "Thanh Hóa").strip()
+                name = str(st.get("name") or "Trạm không tên").strip()
+                area = str(st.get("area") or "Thanh Hóa").strip()
                 
-                # Ép kiểu mưa an toàn (độ sâu mưa tích lũy)
                 try:
-                    rain_val = st.get("depth") if st.get("depth") is not None else st.get("sumDepth", 0.0)
-                    rain = float(rain_val)
+                    rain = float(st.get("depth", 0.0))
                 except (ValueError, TypeError):
                     rain = 0.0
 
@@ -247,9 +254,7 @@ def fetch_rain_from_vrain_api(group_id, referer_url, min_rain=30.0):
     except Exception as e:
         print(f"❌ Lỗi fetch Vrain: {e}")
 
-    # Sắp xếp trạm mưa lớn nhất lên đầu
     alerts.sort(key=lambda x: x["rain"], reverse=True)
-    
     return {
         "has_warning": len(alerts) > 0,
         "count": len(alerts),
