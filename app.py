@@ -132,7 +132,7 @@ def check_rain_alert_level(st_key, rain, stage_dict):
 def fetch_vrain_rain_stations(min_rain=30.0):
     now_vn = datetime.utcnow() + timedelta(hours=7)
     updated_at = now_vn.strftime("%H:%M:%S %d/%m/%Y")
-    time_range_text = f"Từ 19:00 hôm trước đến {now_vn.strftime('%H:%M %d/%m')}"
+    time_range_text = f"Tích lũy trong ngày (tính từ 00:00 {now_vn.strftime('%d/%m')})"
     
     headers = {**HEADERS_DEFAULT, 'Referer': 'https://vrain.vn/home/33/overview'}
     alerts = []
@@ -142,38 +142,33 @@ def fetch_vrain_rain_stations(min_rain=30.0):
         res = requests.get(VRAIN_SUMMARY_URL, headers=headers, timeout=12)
         if res.status_code == 200:
             raw_data = res.json()
-            stats = []
-            if isinstance(raw_data, list):
-                stats = raw_data
-            elif isinstance(raw_data, dict):
-                stats = raw_data.get("data") or raw_data.get("stations") or raw_data.get("stats") or []
-                if not stats:
-                    for v in raw_data.values():
-                        if isinstance(v, list):
-                            stats.extend(v)
+            
+            # Đệ quy lấy tất cả các dict chứa thông tin trạm trong JSON trả về
+            extracted_items = []
+            def extract_nodes(node):
+                if isinstance(node, list):
+                    for item in node: extract_nodes(item)
+                elif isinstance(node, dict):
+                    extracted_items.append(node)
+                    for k, v in node.items():
+                        if isinstance(v, (list, dict)): extract_nodes(v)
+                        
+            extract_nodes(raw_data)
 
-            for st in stats:
-                if not isinstance(st, dict):
+            for st in extracted_items:
+                name = str(st.get("stationName") or st.get("name") or st.get("station_name") or "").strip()
+                if not name or name in ["Trạm không tên", "None"]:
                     continue
-                st_obj = st.get("station", st) if isinstance(st.get("station"), dict) else st
-                
-                city_id = str(st_obj.get("cityID", ""))
-                city_name = str(st_obj.get("cityName", "") or st_obj.get("province", "") or st_obj.get("area", "")).lower()
-                
-                if not (city_id in ["27", "38"] or "thanh h" in city_name or "thanh hóa" in city_name):
-                    if not st_obj.get("stationName") and not st_obj.get("name"):
-                        continue
 
-                name = str(st_obj.get("stationName") or st_obj.get("name") or "").strip()
-                if not name:
-                    continue
+                # Lấy giá trị lượng mưa linh hoạt từ mọi key khả thi của Vrain API
+                rain_raw = (
+                    st.get("rain") if st.get("rain") is not None else
+                    st.get("depth") if st.get("depth") is not None else
+                    st.get("sumDepth") if st.get("sumDepth") is not None else
+                    st.get("totalRain") if st.get("totalRain") is not None else 0
+                )
 
                 try:
-                    rain_raw = st.get("sumDepth")
-                    if rain_raw is None:
-                        rain_raw = st_obj.get("sumDepth")
-                    if rain_raw is None:
-                        rain_raw = st.get("depth", 0)
                     rain_total = float(rain_raw)
                 except (ValueError, TypeError):
                     rain_total = 0.0
@@ -182,10 +177,13 @@ def fetch_vrain_rain_stations(min_rain=30.0):
                     st_key = name.lower()
                     if st_key not in seen_stations:
                         seen_stations.add(st_key)
+                        loc = st.get("address") or st.get("area") or st.get("stationLocation") or "Thanh Hóa"
+                        if isinstance(loc, dict): loc = loc.get("name", "Thanh Hóa")
+                        
                         alerts.append({
                             "key": st_key,
                             "name": name,
-                            "location": str(st_obj.get("area") or st_obj.get("stationLocation") or "Thanh Hóa").strip(),
+                            "location": str(loc).strip(),
                             "rain": round(rain_total, 1)
                         })
     except Exception as e:
@@ -219,7 +217,7 @@ def format_vrain_message(data):
 def fetch_kttv_rain_stations(min_rain=30.0):
     now_vn = datetime.utcnow() + timedelta(hours=7)
     updated_at = now_vn.strftime("%H:%M:%S %d/%m/%Y")
-    time_range_text = f"Từ 00:00 hôm nay đến {now_vn.strftime('%H:%M %d/%m')}"
+    time_range_text = f"Tích lũy trong ngày (tính từ 00:00 {now_vn.strftime('%d/%m')})"
     
     headers = {**HEADERS_DEFAULT, 'Referer': 'https://kttv.vrain.vn/home/14/overview'}
     alerts = []
@@ -229,33 +227,31 @@ def fetch_kttv_rain_stations(min_rain=30.0):
         res = requests.get(KTTV_SUMMARY_URL, headers=headers, timeout=15)
         if res.status_code == 200:
             raw_data = res.json()
-            
             extracted_stations = []
+            
             def deep_extract(node):
                 if isinstance(node, list):
-                    for item in node:
-                        deep_extract(item)
+                    for item in node: deep_extract(item)
                 elif isinstance(node, dict):
-                    if "stationName" in node or "sumDepth" in node or "depth" in node:
+                    if any(k in node for k in ["stationName", "name", "depth", "sumDepth", "rain"]):
                         extracted_stations.append(node)
                     for k, v in node.items():
-                        if isinstance(v, (list, dict)):
-                            deep_extract(v)
+                        if isinstance(v, (list, dict)): deep_extract(v)
 
             deep_extract(raw_data)
 
             for st in extracted_stations:
-                if not isinstance(st, dict):
+                name = str(st.get("stationName") or st.get("name") or "").strip()
+                if not name or name in ["Trạm không tên", "None"]:
                     continue
 
-                name = str(st.get("stationName") or st.get("name") or "").strip()
-                if not name or name == "Trạm không tên":
-                    continue
+                rain_raw = (
+                    st.get("rain") if st.get("rain") is not None else
+                    st.get("depth") if st.get("depth") is not None else
+                    st.get("sumDepth") if st.get("sumDepth") is not None else 0
+                )
 
                 try:
-                    rain_raw = st.get("sumDepth")
-                    if rain_raw is None:
-                        rain_raw = st.get("depth", 0)
                     rain_total = float(rain_raw)
                 except (ValueError, TypeError):
                     rain_total = 0.0
@@ -265,8 +261,8 @@ def fetch_kttv_rain_stations(min_rain=30.0):
                     if st_key not in seen_stations:
                         seen_stations.add(st_key)
                         loc = st.get("address") or st.get("area") or st.get("stationLocation") or "Thanh Hóa"
-                        if isinstance(loc, dict):
-                            loc = loc.get("name", "Thanh Hóa")
+                        if isinstance(loc, dict): loc = loc.get("name", "Thanh Hóa")
+                        
                         alerts.append({
                             "key": st_key,
                             "name": name,
