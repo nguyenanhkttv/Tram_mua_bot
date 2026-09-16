@@ -13,7 +13,7 @@ urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 # ==================== CẤU HÌNH API ====================
 IWEATHER_STORM_URL = "https://iweather.gov.vn/product/warningstorm?token=null"
 VNDMS_WARNING_URL = "https://vndms.gov.vn/EventDisaster/WarningEvent"
-VRAIN_SUMMARY_URL = "https://vrain.vn/api/v2/home/33/summary"
+VRAIN_SUMMARY_URL = "https://vrain.vn/api/v2/home/27/summary"
 KTTV_SUMMARY_URL = "https://kttv.vrain.vn/api/v2/home/14/summary"
 NCHMF_CANHBAO_URL = "https://luquetsatlo.nchmf.gov.vn/LayerMapBox/getDSCanhbaoSLLQ"
 
