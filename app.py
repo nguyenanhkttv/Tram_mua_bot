@@ -51,7 +51,7 @@ def save_chats():
 REGISTERED_CHATS = load_chats()
 LAST_IWEATHER_COUNT = 0
 SENT_VNDMS_IDS = set()
-SENT_LANDSLIDE_KEYS = set()
+SENT_LANDSLIDE_STATES = {}
 STATION_PREVIOUS_STATUS = {}
 SENT_VRAIN_STAGES = {}
 
@@ -65,7 +65,6 @@ def send_telegram_message(chat_id, text):
             print(f"❌ Lỗi gửi Telegram: {e}")
         return
 
-    # Nếu văn bản quá dài, tự động chia theo từng dòng
     lines = text.split("\n")
     chunk = ""
     for line in lines:
@@ -92,15 +91,15 @@ def broadcast_alert(text):
 # ==================== LOGIC CẤP MƯA VÀ MÀU SẮC ====================
 def get_rain_category_info(rain):
     if rain > 200.0:
-        return 4, "🔴 [MƯA ĐẶC BIỆT LỚN > 200MM]", "🔴"
+        return 4, "[MƯA ĐẶC BIỆT LỚN > 200MM]", "🔴"
     elif rain >= 101.0:
-        return 3, "🟡 [MƯA RẤT TO 101 - 200MM]", "🟡"
+        return 3, "[MƯA RẤT TO 101 - 200MM]", "🟡"
     elif rain >= 51.0:
-        return 2, "🔵 [MƯA TO 51 - 100MM]", "🔵"
+        return 2, "[MƯA TO 51 - 100MM]", "🔵"
     elif rain >= 16.0:
-        return 1, "🟢 [MƯA VỪA 16 - 50MM]", "🟢"
+        return 1, "[MƯA VỪA 16 - 50MM]", "🟢"
     else:
-        return 0, "⚪ [MƯA NHỎ/KHÔNG MƯA < 16MM]", "⚪"
+        return 0, "[MƯA NHỎ/KHÔNG MƯA < 16MM]", "⚪"
 
 def check_rain_alert_level(st_key, rain, stage_dict):
     state = stage_dict.get(st_key, {"stage": 0, "last_rain": 0.0})
@@ -110,6 +109,7 @@ def check_rain_alert_level(st_key, rain, stage_dict):
     current_stage, tag, icon = get_rain_category_info(rain)
     should_alert = False
 
+    # Kiểm tra nếu nhảy cấp mưa hoặc lượng mưa tiếp tục tăng thêm >= 10mm ở cấp cao
     if current_stage > 0:
         if current_stage > prev_stage:
             should_alert = True
@@ -189,11 +189,12 @@ def fetch_vrain_rain_stations(min_rain=1.0):
         "updated_at": updated_at
     }
 
-def format_vrain_message(data):
-    msg = f"🌧️ <b>[CẢNH BÁO MƯA VRAIN.VN THANH HÓA]</b>\n"
+def format_vrain_message(data, is_auto=False):
+    header = "⚠️ <b>[CẢNH BÁO TỰ ĐỘNG: MƯA VRAIN CẬP NHẬT MỚI]</b>" if is_auto else "🌧️ <b>[CẢNH BÁO MƯA VRAIN.VN THANH HÓA]</b>"
+    msg = f"{header}\n"
     msg += f"🕒 <i>Cập nhật:</i> <code>{data['updated_at']}</code>\n"
     msg += f"📅 <i>Khung giờ tính:</i> <code>{data['time_range']}</code>\n"
-    msg += f"📊 <i>Tổng số trạm ghi nhận mưa:</i> <b>{data['count']} trạm</b>\n"
+    msg += f"📊 <i>Tổng số trạm:</i> <b>{data['count']} trạm</b>\n"
     msg += "───────────────────\n"
 
     for idx, alert in enumerate(data['alerts'], 1):
@@ -204,7 +205,7 @@ def format_vrain_message(data):
     msg += "🌐 <i>Nguồn dữ liệu: vrain.vn</i>"
     return msg
 
-# ==================== LUỒNG THI CÔNG TỰ ĐỘNG ====================
+# ==================== LUỒNG THI CÔNG TỰ ĐỘNG MƯA VRAIN ====================
 def run_rain_check_logic():
     global SENT_VRAIN_STAGES
     try:
@@ -221,11 +222,12 @@ def run_rain_check_logic():
                     a_copy['icon'] = icon
                     alerts_to_send.append(a_copy)
 
+            # Chỉ gửi tin nhắn nếu có trạm mới hoặc tăng cấp mưa
             if alerts_to_send:
                 v_copy = dict(vrain_data)
                 v_copy['alerts'] = alerts_to_send
                 v_copy['count'] = len(alerts_to_send)
-                broadcast_alert(format_vrain_message(v_copy))
+                broadcast_alert(format_vrain_message(v_copy, is_auto=True))
     except Exception as e:
         print(f"❌ Lỗi quét Vrain: {e}")
 
@@ -269,23 +271,30 @@ def get_nchmf_landslide_warning():
                 lq_raw = item.get("nguycoluquet") or item.get("lu_quet") or "Trung bình"
                 sl_raw = item.get("nguycosatlo") or item.get("sat_lo") or "Trung bình"
                 
-                # Ưu tiên lấy các địa bàn có nguy cơ Cao hoặc Rất cao
                 lq_val = SEVERITY_ORDER.get(lq_raw, 1)
                 sl_val = SEVERITY_ORDER.get(sl_raw, 1)
 
                 lq_str = str(lq_raw) if str(lq_raw).startswith("Mức") else f"Mức {str(lq_raw).lower()}"
                 sl_str = str(sl_raw) if str(sl_raw).startswith("Mức") else f"Mức {str(sl_raw).lower()}"
 
+                # Gán icon đúng quy định: 🟣 Rất cao | 🔴 Cao | 🟠 Trung bình
+                max_sev = max(lq_val, sl_val)
+                if max_sev >= 3:
+                    icon = "🟣"
+                elif max_sev == 2:
+                    icon = "🔴"
+                else:
+                    icon = "🟠"
+
                 if key_2cap not in dict_2cap:
                     dict_2cap[key_2cap] = {
                         "key": key_2cap, "huyen": huyen, "xa_2cap": xa_2cap,
                         "lu_quet": lq_str, "sat_lo": sl_str,
-                        "_lq_val": lq_val, "_sl_val": sl_val
+                        "max_sev": max_sev, "icon": icon
                     }
 
         alerts = list(dict_2cap.values())
-        # Sắp xếp các khu vực nguy cơ cao nhất lên đầu
-        alerts.sort(key=lambda x: max(x["_lq_val"], x["_sl_val"]), reverse=True)
+        alerts.sort(key=lambda x: x["max_sev"], reverse=True)
 
         return {"status": "success", "has_warning": len(alerts) > 0, "count": len(alerts), "alerts": alerts, "updated_at": now_str}
     except Exception as e:
@@ -298,9 +307,32 @@ def format_nchmf_message(data, is_auto=False):
     header = "⚠️ <b>[CẢNH BÁO TỰ ĐỘNG: LŨ QUÉT & SẠT LỞ THANH HÓA]</b>" if is_auto else "⛰️ <b>[CẢNH BÁO LŨ QUÉT & SẠT LỞ - THANH HÓA]</b>"
     msg = f"{header}\n🕒 <i>Thời gian:</i> <code>{data['updated_at']}</code>\n📍 <i>Tổng số vùng 2 cấp:</i> <b>{data['count']} xã/thị trấn</b>\n───────────────────\n"
     for idx, item in enumerate(data['alerts'], 1):
-        icon = "🔴" if max(item['_lq_val'], item['_sl_val']) >= 2 else "🟠"
-        msg += f"{icon} <b>{idx}. Địa bàn: {item['xa_2cap']}</b> ({item['huyen']})\n   └ Lũ quét: <i>{item['lu_quet']}</i> | Sạt lở: <i>{item['sat_lo']}</i>\n\n"
+        msg += f"{item['icon']} <b>{idx}. Địa bàn: {item['xa_2cap']}</b> ({item['huyen']})\n   └ Lũ quét: <i>{item['lu_quet']}</i> | Sạt lở: <i>{item['sat_lo']}</i>\n\n"
     return msg
+
+# ==================== LUỒNG THI CÔNG TỰ ĐỘNG LŨ QUÉT ====================
+def run_landslide_check_logic():
+    global SENT_LANDSLIDE_STATES
+    try:
+        landslide_data = get_nchmf_landslide_warning()
+        if landslide_data.get("status") == "success" and landslide_data.get("has_warning"):
+            new_or_updated_alerts = []
+            for a in landslide_data['alerts']:
+                key = a['key']
+                sev = a['max_sev']
+                
+                # Chỉ cảnh báo nếu là địa bàn mới hoặc địa bàn cũ tăng mức nguy cơ
+                if key not in SENT_LANDSLIDE_STATES or sev > SENT_LANDSLIDE_STATES[key]:
+                    SENT_LANDSLIDE_STATES[key] = sev
+                    new_or_updated_alerts.append(a)
+
+            if new_or_updated_alerts:
+                l_copy = dict(landslide_data)
+                l_copy['alerts'] = new_or_updated_alerts
+                l_copy['count'] = len(new_or_updated_alerts)
+                broadcast_alert(format_nchmf_message(l_copy, is_auto=True))
+    except Exception as e:
+        print(f"❌ Lỗi quét lũ quét: {e}")
 
 # ==================== TRẠM IOT, DÔNG SÉT, VNDMS ====================
 def get_station_status():
@@ -436,7 +468,7 @@ def process_user_command(chat_id, text_raw):
         send_telegram_message(chat_id, format_station_message(st_data))
     elif cmd == "/vrain":
         vrain_data = fetch_vrain_rain_stations(min_rain=1.0)
-        send_telegram_message(chat_id, format_vrain_message(vrain_data) if vrain_data.get("has_warning") else f"🌧️ <b>[GIÁM SÁT MƯA VRAIN.VN THANH HÓA]</b>\n\n✅ Chưa có trạm Vrain nào ghi nhận lượng mưa.")
+        send_telegram_message(chat_id, format_vrain_message(vrain_data, is_auto=False) if vrain_data.get("has_warning") else f"🌧️ <b>[GIÁM SÁT MƯA VRAIN.VN THANH HÓA]</b>\n\n✅ Chưa có trạm Vrain nào ghi nhận lượng mưa.")
     elif cmd == "/dong":
         iweather_data = get_iweather_storm_warning("Thanh Hóa")
         send_telegram_message(chat_id, format_iweather_message(iweather_data, is_auto=False))
@@ -475,10 +507,11 @@ def process_user_command(chat_id, text_raw):
 # ==================== ROUTE QUÉT ĐỊNH KỲ ====================
 @app.route('/')
 def home():
-    global LAST_IWEATHER_COUNT, SENT_VNDMS_IDS, STATION_PREVIOUS_STATUS, SENT_LANDSLIDE_KEYS
+    global LAST_IWEATHER_COUNT, SENT_VNDMS_IDS, STATION_PREVIOUS_STATUS
     
-    # 0. Quét Mưa trực tiếp Vrain
+    # 0. Quét Mưa trực tiếp Vrain & Lũ quét
     run_rain_check_logic()
+    run_landslide_check_logic()
 
     # 1. Trạm
     station_data = get_station_status()
@@ -515,19 +548,6 @@ def home():
             v_copy['alerts'] = new_alerts
             v_copy['count'] = len(new_alerts)
             broadcast_alert(format_vndms_message(v_copy, is_auto=True))
-
-    # 4. Sạt lở
-    landslide_data = get_nchmf_landslide_warning()
-    if landslide_data.get("status") == "success" and landslide_data.get("has_warning"):
-        current_keys = {a['key'] for a in landslide_data['alerts']}
-        new_keys = current_keys - SENT_LANDSLIDE_KEYS
-        if new_keys:
-            new_alerts = [a for a in landslide_data['alerts'] if a['key'] in new_keys]
-            SENT_LANDSLIDE_KEYS.update(new_keys)
-            l_copy = dict(landslide_data)
-            l_copy['alerts'] = new_alerts
-            l_copy['count'] = len(new_alerts)
-            broadcast_alert(format_nchmf_message(l_copy, is_auto=True))
 
     return jsonify({"status": "running", "registered_chats": list(REGISTERED_CHATS)}), 200
 
