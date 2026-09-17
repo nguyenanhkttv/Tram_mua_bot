@@ -215,6 +215,7 @@ def format_vrain_message(data):
     return msg
 
 # ==================== NGUỒN 2: KTTV.VRAIN.VN ====================
+# ==================== NGUỒN 2: KTTV.VRAIN.VN (CHỈ LẤY THANH HÓA) ====================
 def fetch_kttv_rain_stations(min_rain=30.0):
     now_vn = datetime.utcnow() + timedelta(hours=7)
     updated_at = now_vn.strftime("%H:%M:%S %d/%m/%Y")
@@ -249,8 +250,20 @@ def fetch_kttv_rain_stations(min_rain=30.0):
                     if not isinstance(item, dict): continue
                     
                     st_obj = item.get("station") if isinstance(item.get("station"), dict) else item
-                    name = str(st_obj.get("name") or st_obj.get("stationName") or item.get("name") or "").strip()
                     
+                    # --- BỘ LỌC CHỈ LẤY TỈNH THANH HÓA ---
+                    city_id = str(st_obj.get("cityID") or item.get("cityID") or st_obj.get("city_id") or "")
+                    city_info = st_obj.get("city") or item.get("city") or {}
+                    city_name = city_info.get("name", "") if isinstance(city_info, dict) else str(city_info)
+                    prov_name = str(st_obj.get("provinceName") or item.get("provinceName") or city_name).lower()
+                    
+                    # Thanh Hóa có ID tỉnh là 27 trên hệ thống Vrain
+                    is_thanh_hoa = (city_id == "27") or ("thanh" in prov_name and ("hoá" in prov_name or "hóa" in prov_name))
+                    if not is_thanh_hoa:
+                        continue
+                    # -------------------------------------
+
+                    name = str(st_obj.get("name") or st_obj.get("stationName") or item.get("name") or "").strip()
                     if not name or name.lower() in ["none", "null", "trạm không tên"]:
                         continue
 
