@@ -13,9 +13,11 @@ urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 # ==================== CẤU HÌNH API ====================
 IWEATHER_STORM_URL = "https://iweather.gov.vn/product/warningstorm?token=null"
 VNDMS_WARNING_URL = "https://vndms.gov.vn/EventDisaster/WarningEvent"
-VRAIN_SUMMARY_URL = "https://vrain.vn/api/v2/home/27/summary"
-KTTV_SUMMARY_URL = "https://kttv.vrain.vn/api/v2/home/14/summary"
 NCHMF_CANHBAO_URL = "https://luquetsatlo.nchmf.gov.vn/LayerMapBox/getDSCanhbaoSLLQ"
+
+# API Chuẩn cho 2 nguồn Mưa
+VRAIN_DATA_URL = "https://data.vrain.vn/public/current/27.json"
+KTTV_SUMMARY_URL = "https://kttv.vrain.vn/api/kttv/private/v1/stats/summary"
 
 IOT_STATION_URL = os.environ.get("IOT_STATION_URL", "http://iot.vientnmt.com:8888/api/DataAPI/ReadDeviceUser")
 IOT_TOKENKEY = os.environ.get("IOT_TOKENKEY", "rRh2Tws7G5ba7HCNLjc73REyXSixwmIPK2tE8t5Nr...")
@@ -134,18 +136,13 @@ def fetch_vrain_rain_stations(min_rain=30.0):
     updated_at = now_vn.strftime("%H:%M:%S %d/%m/%Y")
     time_range_text = f"Tích lũy ngày (tính từ 00:00 {now_vn.strftime('%d/%m')})"
     
-    headers = {
-        **HEADERS_DEFAULT, 
-        'Referer': 'https://vrain.vn/27/overview?public_map=windy',
-        'Accept': 'application/json, text/plain, */*'
-    }
+    headers = {**HEADERS_DEFAULT}
     alerts = []
     seen_stations = set()
 
     urls_to_try = [
-        VRAIN_SUMMARY_URL,
-        "https://vrain.vn/api/v2/home/33/summary",
-        "https://vrain.vn/api/v2/home/27/summary"
+        VRAIN_DATA_URL,
+        "https://data.vrain.vn/public/current/33.json"
     ]
 
     for url in urls_to_try:
@@ -153,47 +150,20 @@ def fetch_vrain_rain_stations(min_rain=30.0):
             res = requests.get(url, headers=headers, timeout=12)
             if res.status_code == 200:
                 raw_data = res.json()
-                
-                items_list = []
-                if isinstance(raw_data, list):
-                    items_list = raw_data
-                elif isinstance(raw_data, dict):
-                    items_list = (
-                        raw_data.get("data") 
-                        or raw_data.get("stations") 
-                        or raw_data.get("summary") 
-                        or raw_data.get("result") 
-                        or []
-                    )
-                    if not items_list and raw_data:
-                        items_list = [v for v in raw_data.values() if isinstance(v, dict)]
+                items_list = raw_data if isinstance(raw_data, list) else []
 
                 for item in items_list:
-                    if not isinstance(item, dict): 
-                        continue
+                    if not isinstance(item, dict): continue
                     
-                    st_obj = item.get("station") if isinstance(item.get("station"), dict) else item
-                    name = str(
-                        st_obj.get("name") 
-                        or st_obj.get("stationName") 
-                        or item.get("name") 
-                        or item.get("stationName") 
-                        or ""
-                    ).strip()
+                    st_obj = item.get("station", {}) if isinstance(item.get("station"), dict) else item
+                    name = str(st_obj.get("name") or st_obj.get("stationName") or item.get("name") or "").strip()
                     
-                    if not name or name.lower() in ["none", "null", "trạm không tên", ""]:
+                    if not name or name.lower() in ["none", "null", "trạm không tên"]:
                         continue
 
                     rain_val = item.get("sumDepth")
                     if rain_val is None:
-                        rain_val = (
-                            st_obj.get("sumDepth") 
-                            or item.get("depth") 
-                            or item.get("rain") 
-                            or item.get("totalRain") 
-                            or item.get("val") 
-                            or item.get("value")
-                        )
+                        rain_val = st_obj.get("sumDepth") or item.get("depth") or item.get("rain") or item.get("val")
 
                     try:
                         rain_total = float(rain_val) if rain_val is not None else 0.0
@@ -205,11 +175,8 @@ def fetch_vrain_rain_stations(min_rain=30.0):
                         if st_key not in seen_stations:
                             seen_stations.add(st_key)
                             
-                            area_info = st_obj.get("area") or item.get("area") or st_obj.get("stationLocation")
-                            if isinstance(area_info, dict):
-                                loc = area_info.get("name", "Thanh Hóa")
-                            else:
-                                loc = str(area_info or "Thanh Hóa")
+                            area_info = st_obj.get("area") or item.get("area")
+                            loc = area_info.get("name") if isinstance(area_info, dict) else str(area_info or "Thanh Hóa")
                             
                             alerts.append({
                                 "key": st_key,
@@ -254,8 +221,8 @@ def fetch_kttv_rain_stations(min_rain=30.0):
     time_range_text = f"Tích lũy ngày (tính từ 00:00 {now_vn.strftime('%d/%m')})"
     
     headers = {
-        **HEADERS_DEFAULT, 
-        'Referer': 'https://kttv.vrain.vn/home/14/overview',
+        **HEADERS_DEFAULT,
+        'Referer': 'https://kttv.vrain.vn/',
         'Accept': 'application/json, text/plain, */*'
     }
     alerts = []
@@ -263,7 +230,7 @@ def fetch_kttv_rain_stations(min_rain=30.0):
 
     urls_to_try = [
         KTTV_SUMMARY_URL,
-        "https://kttv.vrain.vn/api/v2/home/14/summary"
+        "https://data.vrain.vn/public/current/14.json"
     ]
 
     for url in urls_to_try:
@@ -276,42 +243,20 @@ def fetch_kttv_rain_stations(min_rain=30.0):
                 if isinstance(raw_data, list):
                     items_list = raw_data
                 elif isinstance(raw_data, dict):
-                    items_list = (
-                        raw_data.get("data") 
-                        or raw_data.get("stations") 
-                        or raw_data.get("summary") 
-                        or raw_data.get("result") 
-                        or []
-                    )
-                    if not items_list and raw_data:
-                        items_list = [v for v in raw_data.values() if isinstance(v, dict)]
+                    items_list = raw_data.get("data") or raw_data.get("stations") or raw_data.get("summary") or list(raw_data.values())
 
                 for item in items_list:
-                    if not isinstance(item, dict): 
-                        continue
+                    if not isinstance(item, dict): continue
                     
                     st_obj = item.get("station") if isinstance(item.get("station"), dict) else item
-                    name = str(
-                        st_obj.get("name") 
-                        or st_obj.get("stationName") 
-                        or item.get("name") 
-                        or item.get("stationName") 
-                        or ""
-                    ).strip()
+                    name = str(st_obj.get("name") or st_obj.get("stationName") or item.get("name") or "").strip()
                     
-                    if not name or name.lower() in ["none", "null", "trạm không tên", ""]:
+                    if not name or name.lower() in ["none", "null", "trạm không tên"]:
                         continue
 
                     rain_val = item.get("sumDepth")
                     if rain_val is None:
-                        rain_val = (
-                            st_obj.get("sumDepth") 
-                            or item.get("depth") 
-                            or item.get("rain") 
-                            or item.get("totalRain") 
-                            or item.get("val") 
-                            or item.get("value")
-                        )
+                        rain_val = st_obj.get("sumDepth") or item.get("depth") or item.get("rain") or item.get("val") or item.get("value")
 
                     try:
                         rain_total = float(rain_val) if rain_val is not None else 0.0
@@ -323,11 +268,8 @@ def fetch_kttv_rain_stations(min_rain=30.0):
                         if st_key not in seen_stations:
                             seen_stations.add(st_key)
                             
-                            area_info = st_obj.get("area") or item.get("area") or st_obj.get("stationLocation")
-                            if isinstance(area_info, dict):
-                                loc = area_info.get("name", "Thanh Hóa")
-                            else:
-                                loc = str(area_info or "Thanh Hóa")
+                            area_info = st_obj.get("area") or item.get("area")
+                            loc = area_info.get("name") if isinstance(area_info, dict) else str(area_info or "Thanh Hóa")
                             
                             alerts.append({
                                 "key": st_key,
