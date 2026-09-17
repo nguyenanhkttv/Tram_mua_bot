@@ -109,7 +109,6 @@ def check_rain_alert_level(st_key, rain, stage_dict):
     current_stage, tag, icon = get_rain_category_info(rain)
     should_alert = False
 
-    # Báo động khi tăng cấp mưa hoặc khi mưa cực lớn tiếp tục tăng thêm >= 10mm
     if current_stage > 0:
         if current_stage > prev_stage:
             should_alert = True
@@ -162,7 +161,9 @@ def fetch_vrain_rain_stations(min_rain=16.0):
                         
                         area_info = st_obj.get("area") or item.get("area")
                         loc = area_info.get("name") if isinstance(area_info, dict) else str(area_info or "Thanh Hóa")
-                        _, tag, icon, level = get_rain_category_info(rain_total)
+                        
+                        # SỬA LỖI UNPACK Ở ĐÂY: Nhận đúng 3 giá trị trả về
+                        level, tag, icon = get_rain_category_info(rain_total)
                         
                         alerts.append({
                             "key": st_key,
@@ -184,7 +185,6 @@ def fetch_vrain_rain_stations(min_rain=16.0):
         "time_range": time_range_text,
         "updated_at": updated_at
     }
-
 def format_vrain_message(data):
     msg = f"🌧️ <b>[CẢNH BÁO MƯA VRAIN.VN THANH HÓA]</b>\n"
     msg += f"🕒 <i>Cập nhật:</i> <code>{data['updated_at']}</code>\n"
